@@ -8,6 +8,7 @@ import logging
 from collections import deque
 from contextlib import asynccontextmanager
 from datetime import datetime
+from time import monotonic
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +35,8 @@ _bridge = ChannelBridge(on_log=lambda level, msg: _log_buffer.append({"level": l
 _login_state: dict[str, Any] = {}
 _scheduler_task: asyncio.Task | None = None
 _last_daily_run: str = ""
+_login_status_cache: dict[str, Any] = {"value": False, "ts": 0.0}
+_LOGIN_STATUS_TTL_SECONDS = 20.0
 
 
 def _format_tg_error(exc: BaseException) -> str:
@@ -54,6 +57,22 @@ def _format_tg_error(exc: BaseException) -> str:
             "例如 socks5://127.0.0.1:7890。"
         )
     return msg
+
+
+def _clear_login_cache() -> None:
+    _login_status_cache["ts"] = 0.0
+
+
+async def _get_cached_logged_in(force: bool = False) -> bool:
+    if not force and monotonic() - float(_login_status_cache["ts"]) < _LOGIN_STATUS_TTL_SECONDS:
+        return bool(_login_status_cache["value"])
+    try:
+        value = await _bridge.is_logged_in()
+    except Exception:
+        value = False
+    _login_status_cache["value"] = value
+    _login_status_cache["ts"] = monotonic()
+    return value
 
 
 class ConfigBody(BaseModel):
@@ -150,10 +169,7 @@ async def index() -> FileResponse:
 
 @app.get("/api/status")
 async def status() -> dict:
-    try:
-        logged_in = await _bridge.is_logged_in()
-    except Exception:
-        logged_in = False
+    logged_in = await _get_cached_logged_in()
     return {
         "logged_in": logged_in,
         "bridge_running": _bridge.running,
@@ -198,6 +214,7 @@ async def post_config(body: ConfigBody) -> dict:
     settings = Settings.from_dict(data)
     save_settings(settings)
     _bridge.reload_settings()
+    _clear_login_cache()
     return {"ok": True}
 
 
@@ -211,6 +228,7 @@ async def login_send_code(body: PhoneBody) -> dict:
         _login_state["phone"] = body.phone.strip()
         _login_state["phone_code_hash"] = result["phone_code_hash"]
         _log_buffer.append({"level": "INFO", "message": f"验证码已发送到 {body.phone}"})
+        _clear_login_cache()
         return {"ok": True, "phone_code_hash": result["phone_code_hash"]}
     except Exception as e:
         raise HTTPException(400, _format_tg_error(e)) from e
@@ -228,6 +246,7 @@ async def login_confirm(body: CodeBody) -> dict:
         if result.get("need_2fa"):
             return {"need_2fa": True}
         _log_buffer.append({"level": "INFO", "message": f"登录成功: {result.get('user')}"})
+        _clear_login_cache()
         return result
     except Exception as e:
         raise HTTPException(400, _format_tg_error(e)) from e
@@ -239,6 +258,7 @@ async def bridge_start() -> dict:
         return {"ok": True, "message": "已在运行"}
     try:
         await _bridge.start()
+        _clear_login_cache()
         return {"ok": True}
     except Exception as e:
         raise HTTPException(400, str(e)) from e
@@ -247,6 +267,7 @@ async def bridge_start() -> dict:
 @app.post("/api/bridge/stop")
 async def bridge_stop() -> dict:
     await _bridge.stop()
+    _clear_login_cache()
     return {"ok": True}
 
 

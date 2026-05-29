@@ -71,7 +71,10 @@ class ChannelBridge:
         if self._client and self._client.is_connected():
             return self._client
         client = create_client(self.settings)
-        await client.start()
+        await client.connect()
+        if not await client.is_user_authorized():
+            await client.disconnect()
+            raise RuntimeError("当前账号未登录，请先在网页完成手机号登录")
         return client
 
     async def is_logged_in(self) -> bool:
@@ -371,7 +374,11 @@ class ChannelBridge:
 
         self._client = create_client(self.settings)
         self._register_handlers(self._client)
-        await self._client.start()
+        await self._client.connect()
+        if not await self._client.is_user_authorized():
+            await self._client.disconnect()
+            self._client = None
+            raise ValueError("当前会话未登录，请先在网页发送验证码并完成登录")
         me = await self._client.get_me()
         self._emit("INFO", f"已登录 {me.first_name} (@{me.username or '-'})")
         await self._verify(self._client)
