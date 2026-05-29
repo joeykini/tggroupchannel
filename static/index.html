@@ -14,7 +14,15 @@
     .sub { color: var(--muted); font-size: 0.86rem; margin: 0; }
     .layout { display: grid; grid-template-columns: 420px 1fr; gap: 16px; align-items: start; }
     @media (max-width: 960px) { .layout { grid-template-columns: 1fr; } }
-    .grid { display: grid; gap: 14px; position: sticky; top: 14px; }
+    .grid {
+      display: grid;
+      gap: 14px;
+      position: sticky;
+      top: 14px;
+      max-height: calc(100vh - 28px);
+      overflow-y: auto;
+      padding-right: 4px;
+    }
     section { background: var(--card); border-radius: 12px; padding: 16px; border: 1px solid #2d3a4d; }
     h2 { font-size: 0.95rem; margin: 0 0 10px; color: var(--accent); }
     label { display: block; font-size: 0.85rem; color: var(--muted); margin: 10px 0 4px; }
@@ -211,6 +219,8 @@
       支持多选批量发布，AI 文案与最终发送文案可切换查看。
     </p>
     <div class="toolbar">
+      <button class="ghost tiny" id="btnTransformSelected">模板转化选中</button>
+      <button class="ghost tiny" id="btnTransformPending">模板转化全部待发布</button>
       <button class="primary tiny" id="btnPublishSelected">发布选中</button>
       <button class="ghost tiny" id="btnPublishPending">发布全部待发布</button>
       <button class="danger tiny" id="btnDeleteSelected">删除选中</button>
@@ -391,7 +401,7 @@
     function renderWaterfall(posts) {
       const el = $("waterfall");
       if (!posts || !posts.length) {
-        el.innerHTML = '<p style="color:var(--muted)">暂无抓取记录，请先开始监听并等待源频道发帖</p>';
+        el.innerHTML = '<p style="color:var(--muted)">暂无抓取记录，请先到抓取管理页执行“立即抓取”。</p>';
         return;
       }
       el.innerHTML = posts.map(p => {
@@ -488,6 +498,28 @@
       try {
         const r = await api("/api/posts/publish", { method: "POST", body: JSON.stringify({ ids, all_pending: false }) });
         alert(`发布完成：成功 ${r.published}，失败 ${r.failed}`);
+        refreshPosts(); refreshStatus();
+      } catch (e) { alert(e.message); }
+    };
+    $("btnTransformSelected").onclick = async () => {
+      const ids = selectedIds();
+      if (!ids.length) return alert("请先选择帖子");
+      try {
+        const r = await api("/api/posts/transform", {
+          method: "POST",
+          body: JSON.stringify({ ids, all_pending: false }),
+        });
+        alert(`模板转化完成：成功 ${r.converted}，跳过 ${r.skipped}`);
+        refreshPosts(); refreshStatus();
+      } catch (e) { alert(e.message); }
+    };
+    $("btnTransformPending").onclick = async () => {
+      try {
+        const r = await api("/api/posts/transform", {
+          method: "POST",
+          body: JSON.stringify({ all_pending: true }),
+        });
+        alert(`模板转化完成：成功 ${r.converted}，跳过 ${r.skipped}`);
         refreshPosts(); refreshStatus();
       } catch (e) { alert(e.message); }
     };

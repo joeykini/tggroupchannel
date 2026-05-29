@@ -387,6 +387,41 @@ class ChannelBridge:
     async def publish_all_pending(self) -> dict:
         return await self.publish_posts(list_pending_ids(limit=500))
 
+    async def transform_posts(self, post_ids: list[str]) -> dict:
+        self.reload_settings()
+        if not post_ids:
+            return {"converted": 0, "skipped": 0}
+
+        converted = 0
+        skipped = 0
+        template = (self.settings.publish_template or "").strip()
+        if not template:
+            raise ValueError("请先在配置里填写推送模板")
+
+        for pid in post_ids:
+            post = get(pid)
+            if not post:
+                skipped += 1
+                continue
+            base_text = post.text_cleaned or post.text_original or ""
+            normalized = format_profile_caption(base_text)
+            rendered = render_publish_template(normalized, template)
+            parts: list[str] = []
+            if self.settings.forward_header:
+                parts.append(self.settings.forward_header)
+            if rendered:
+                parts.append(rendered)
+            final = "\n\n".join(parts) if parts else ""
+            updates: dict[str, str] = {
+                "text_formatted": rendered,
+                "text_final": final,
+            }
+            if post.status in ("captured", "rewritten"):
+                updates["status"] = "rewritten"
+            store_update(pid, **updates)
+            converted += 1
+        return {"converted": converted, "skipped": skipped}
+
     async def fetch_recent_once(self, limit_per_channel: int = 30, since_hours: int | None = None) -> dict:
         self.reload_settings()
         errs = self.settings.validate_for_capture()

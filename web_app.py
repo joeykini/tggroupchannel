@@ -122,6 +122,11 @@ class PublishBody(BaseModel):
     all_pending: bool = False
 
 
+class TransformBody(BaseModel):
+    ids: list[str] = Field(default_factory=list)
+    all_pending: bool = False
+
+
 class DeleteBody(BaseModel):
     ids: list[str] = Field(default_factory=list)
 
@@ -321,6 +326,16 @@ async def publish_posts(body: PublishBody) -> dict:
             result = await _bridge.publish_all_pending()
         else:
             result = await _bridge.publish_posts(body.ids)
+        return {"ok": True, **result}
+    except Exception as e:
+        raise HTTPException(400, str(e)) from e
+
+
+@app.post("/api/posts/transform")
+async def transform_posts(body: TransformBody) -> dict:
+    try:
+        ids = list_pending_ids(500) if body.all_pending else body.ids
+        result = await _bridge.transform_posts(ids)
         return {"ok": True, **result}
     except Exception as e:
         raise HTTPException(400, str(e)) from e

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import re
-from string import Formatter
 
 
 def _extract_line_value(text: str, labels: list[str]) -> str:
@@ -80,13 +79,9 @@ def render_publish_template(text: str, template: str) -> str:
         return ""
     fields = extract_profile_fields(text)
     fields["raw"] = text
-    fmt = Formatter()
-    needed = [name for _, name, _, _ in fmt.parse(template) if name]
-    if needed and all(not (fields.get(k, "") or "").strip() for k in needed if k != "raw"):
-        return text
     safe = {k: (v or "") for k, v in fields.items()}
     try:
         out = template.format_map(safe).strip()
-        return out or text
+        return out
     except Exception:
         return text
