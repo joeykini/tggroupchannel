@@ -125,6 +125,7 @@ class DeleteBody(BaseModel):
 
 class FetchBody(BaseModel):
     limit: int = 30
+    since_hours: int = 0
 
 
 async def _daily_scheduler_loop() -> None:
@@ -275,7 +276,10 @@ async def bridge_stop() -> dict:
 async def fetch_once(body: FetchBody) -> dict:
     try:
         task = asyncio.create_task(
-            _bridge.fetch_recent_once(limit_per_channel=max(1, body.limit))
+            _bridge.fetch_recent_once(
+                limit_per_channel=max(1, body.limit),
+                since_hours=max(0, body.since_hours),
+            )
         )
         return await asyncio.shield(task)
     except asyncio.CancelledError as e:

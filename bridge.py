@@ -6,12 +6,12 @@ import asyncio
 import logging
 from collections import defaultdict
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from telethon import TelegramClient, events
 from telethon.errors import ChatAdminRequiredError, SessionPasswordNeededError
-from telethon.tl.types import Message
+from telethon.tl.types import DocumentAttributeVideo, Message, MessageMediaDocument, MessageMediaPhoto
 
 from ai_rewrite import rewrite_text
 from config import ROOT, Settings, load_settings
@@ -52,6 +52,7 @@ class ChannelBridge:
         self._task: asyncio.Task | None = None
         self._running = False
         self._target_check_cache: tuple[str, bool, str] | None = None
+        self._target_invalid_notified = False
 
     @property
     def running(self) -> bool:
@@ -64,6 +65,8 @@ class ChannelBridge:
 
     def reload_settings(self) -> None:
         self.settings = load_settings()
+        self._target_check_cache = None
+        self._target_invalid_notified = False
 
     async def _notify(self, text: str) -> None:
         await push_bot_message(self.settings, text)
@@ -147,18 +150,35 @@ class ChannelBridge:
 
     async def _download_previews(
         self, client: TelegramClient, bundle: MessageBundle, post_id: str
-    ) -> list[str]:
-        urls: list[str] = []
+    ) -> list[dict[str, str]]:
+        items: list[dict[str, str]] = []
         media_msgs = [m for m in bundle.messages if m.media]
         for i, msg in enumerate(media_msgs):
-            dest = MEDIA_DIR / f"{post_id}_{i}.jpg"
+            dest = MEDIA_DIR / f"{post_id}_{i}"
             try:
                 downloaded = await client.download_media(msg, file=str(dest))
                 if downloaded:
-                    urls.append(f"/media/{Path(downloaded).name}")
+                    media_type = "file"
+                    if isinstance(msg.media, MessageMediaPhoto):
+                        media_type = "image"
+                    elif isinstance(msg.media, MessageMediaDocument):
+                        mime = (getattr(msg.file, "mime_type", "") or "").lower()
+                        attrs = getattr(msg.document, "attributes", []) or []
+                        if mime.startswith("video/") or any(
+                            isinstance(a, DocumentAttributeVideo) for a in attrs
+                        ):
+                            media_type = "video"
+                        elif mime.startswith("image/"):
+                            media_type = "image"
+                    items.append(
+                        {
+                            "type": media_type,
+                            "path": f"/media/{Path(downloaded).name}",
+                        }
+                    )
             except Exception as e:
                 self._emit("ERROR", f"预览图下载失败: {e}")
-        return urls
+        return items
 
     async def _build_final_text(self, raw_caption: str) -> tuple[str, str, str, str]:
         original = normalize_caption(raw_caption)
@@ -187,6 +207,7 @@ class ChannelBridge:
         try:
             await client.get_entity(target)
             self._target_check_cache = (target, True, "")
+            self._target_invalid_notified = False
             return True, ""
         except Exception as e:
             reason = f"目标频道无效: {target} ({e})"
@@ -194,9 +215,9 @@ class ChannelBridge:
             return False, reason
 
     async def _send_from_paths(
-        self, client: TelegramClient, image_paths: list[str], caption: str
+        self, client: TelegramClient, media_items: list[dict[str, str]], caption: str
     ) -> None:
-        files = [str((MEDIA_DIR / Path(p).name)) for p in image_paths]
+        files = [str((MEDIA_DIR / Path(i.get("path", "")).name)) for i in media_items]
         existing = [f for f in files if Path(f).exists()]
         if existing:
             await client.send_file(self.settings.target_channel, existing, caption=caption or None)
@@ -250,8 +271,14 @@ class ChannelBridge:
             return
 
         try:
-            image_paths = await self._download_previews(client, bundle, post_id)
-            store_update(post_id, image_paths=image_paths, media_count=bundle.media_count)
+            media_items = await self._download_previews(client, bundle, post_id)
+            image_paths = [i["path"] for i in media_items if i.get("type") == "image"]
+            store_update(
+                post_id,
+                image_paths=image_paths,
+                media_items=media_items,
+                media_count=bundle.media_count,
+            )
 
             original, cleaned, rewritten, final = await self._build_final_text(bundle.caption)
             store_update(
@@ -271,7 +298,9 @@ class ChannelBridge:
             ok_target, target_reason = await self._check_target_channel(client)
             if not ok_target:
                 store_update(post_id, status="pending", error=target_reason)
-                self._emit("ERROR", target_reason)
+                if not self._target_invalid_notified:
+                    self._target_invalid_notified = True
+                    self._emit("ERROR", target_reason)
                 return
 
             await self._send_bundle(client, bundle, final)
@@ -316,7 +345,8 @@ class ChannelBridge:
                     continue
                 try:
                     text = post.text_final or post.text_formatted or post.text_cleaned or post.text_original
-                    await self._send_from_paths(client, post.image_paths, text)
+                    media_items = post.media_items or [{"type": "image", "path": p} for p in post.image_paths]
+                    await self._send_from_paths(client, media_items, text)
                     store_update(
                         pid,
                         status="sent",
@@ -337,7 +367,7 @@ class ChannelBridge:
     async def publish_all_pending(self) -> dict:
         return await self.publish_posts(list_pending_ids(limit=500))
 
-    async def fetch_recent_once(self, limit_per_channel: int = 30) -> dict:
+    async def fetch_recent_once(self, limit_per_channel: int = 30, since_hours: int | None = None) -> dict:
         self.reload_settings()
         errs = self.settings.validate_for_capture()
         if errs:
@@ -349,11 +379,19 @@ class ChannelBridge:
             for source in self.settings.source_channels:
                 grouped: dict[int, list[Message]] = defaultdict(list)
                 singles: list[Message] = []
-                async for msg in client.iter_messages(source, limit=limit_per_channel):
+                since_dt = None
+                if since_hours and since_hours > 0:
+                    since_dt = datetime.now(timezone.utc) - timedelta(hours=since_hours)
+                scan_limit = limit_per_channel if not since_dt else max(limit_per_channel * 5, 100)
+                async for msg in client.iter_messages(source, limit=scan_limit):
+                    if since_dt and msg.date and msg.date < since_dt:
+                        break
                     if msg.grouped_id:
                         grouped[int(msg.grouped_id)].append(msg)
                     else:
                         singles.append(msg)
+                    if len(grouped) + len(singles) >= limit_per_channel:
+                        break
                 for msgs in grouped.values():
                     bundle = from_messages(msgs, int(msgs[0].chat_id or 0))
                     await self._process_bundle(client, bundle)

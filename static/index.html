@@ -50,7 +50,7 @@
     .album.n3 img:first-child { grid-row: span 2; }
     .album.n4 { grid-template-columns: 1fr 1fr; grid-template-rows: repeat(3, 72px); }
     .album.n4 img:first-child { grid-row: 1 / span 3; }
-    .album img { width: 100%; height: 100%; object-fit: cover; display: block; min-height: 72px; }
+    .album img, .album video { width: 100%; height: 100%; object-fit: cover; display: block; min-height: 72px; background:#000; }
     .post-body { padding: 12px; font-size: 0.85rem; white-space: pre-wrap; word-break: break-word; max-height: 280px; overflow-y: auto; }
     .tabs { display: flex; gap: 8px; padding: 8px 12px 0; }
     .tabs button { background: transparent; border: 1px solid #2d3a4d; color: var(--muted); padding: 4px 10px; font-size: 0.75rem; }
@@ -86,6 +86,11 @@
         <button class="ghost" id="btnFetchOnce">立即抓取一次</button>
         <button class="ghost" id="btnValidateDb">校验数据库/媒体</button>
       </div>
+      <div class="row">
+        <input id="fetchLimitNow" type="number" value="50" style="max-width:150px" />
+        <input id="fetchHoursNow" type="number" value="24" style="max-width:170px" />
+      </div>
+      <p style="color:var(--muted);font-size:.78rem;margin:8px 0 0">上面两个输入分别是：每频道抓取条数、抓取最近小时数（0=不限）</p>
     </section>
 
     <section>
@@ -337,7 +342,13 @@
     };
     $("btnFetchOnce").onclick = async () => {
       try {
-        await api("/api/fetch/once", { method: "POST", body: JSON.stringify({ limit: parseInt($("dailyFetchLimit").value, 10) || 30 }) });
+        await api("/api/fetch/once", {
+          method: "POST",
+          body: JSON.stringify({
+            limit: parseInt($("fetchLimitNow").value, 10) || 50,
+            since_hours: parseInt($("fetchHoursNow").value, 10) || 0,
+          }),
+        });
         refreshPosts();
       } catch (e) { alert(e.message); }
     };
@@ -353,12 +364,22 @@
       return (s || "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
     }
 
-    function albumHtml(paths) {
-      if (!paths || !paths.length) return '<div class="post-body" style="color:var(--muted)">纯文字帖</div>';
-      const n = Math.min(paths.length, 4);
-      const cls = paths.length >= 4 ? "n4" : paths.length === 3 ? "n3" : paths.length === 2 ? "n2" : "n1";
-      const imgs = paths.slice(0, 4).map(p => `<img src="${p}" alt="" loading="lazy" />`).join("");
-      return `<div class="album ${cls}">${imgs}</div>`;
+    function albumHtml(mediaItems, imagePaths) {
+      let items = mediaItems || [];
+      if ((!items || !items.length) && imagePaths && imagePaths.length) {
+        items = imagePaths.map(p => ({ type: "image", path: p }));
+      }
+      if (!items || !items.length) return '<div class="post-body" style="color:var(--muted)">纯文字帖</div>';
+      const clipped = items.slice(0, 4);
+      const cls = clipped.length >= 4 ? "n4" : clipped.length === 3 ? "n3" : clipped.length === 2 ? "n2" : "n1";
+      const media = clipped.map(item => {
+        const path = item.path || "";
+        if (item.type === "video") {
+          return `<video src="${path}" preload="metadata" controls muted playsinline></video>`;
+        }
+        return `<img src="${path}" alt="" loading="lazy" />`;
+      }).join("");
+      return `<div class="album ${cls}">${media}</div>`;
     }
 
     function renderWaterfall(posts) {
@@ -374,7 +395,7 @@
         return `
         <article class="post-card ${selected}" data-id="${p.id}">
           <div class="status ${st}">${st} · ${p.media_count || 0} 图 · ${new Date(p.created_at).toLocaleString()}</div>
-          ${albumHtml(p.image_paths)}
+          ${albumHtml(p.media_items, p.image_paths)}
           <div class="post-meta">${selected ? "已选中" : "点击卡片可选中批量操作"}</div>
           <div class="tabs">
             <button type="button" class="active" data-tab="orig" data-id="${p.id}">原文</button>

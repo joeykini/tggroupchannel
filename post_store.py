@@ -23,6 +23,7 @@ class StoredPost:
     chat_id: int
     message_ids: list[int]
     image_paths: list[str] = field(default_factory=list)
+    media_items: list[dict[str, str]] = field(default_factory=list)  # [{type,path}]
     text_original: str = ""
     text_cleaned: str = ""
     text_formatted: str = ""
@@ -56,6 +57,7 @@ def init_db() -> None:
                 chat_id INTEGER NOT NULL,
                 message_ids TEXT NOT NULL,
                 image_paths TEXT NOT NULL,
+                media_items TEXT NOT NULL DEFAULT '[]',
                 text_original TEXT NOT NULL,
                 text_cleaned TEXT NOT NULL DEFAULT '',
                 text_formatted TEXT NOT NULL DEFAULT '',
@@ -76,16 +78,25 @@ def init_db() -> None:
         conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_posts_source_key ON posts(source_key)"
         )
+        cols = [r["name"] for r in conn.execute("PRAGMA table_info(posts)").fetchall()]
+        if "media_items" not in cols:
+            conn.execute("ALTER TABLE posts ADD COLUMN media_items TEXT NOT NULL DEFAULT '[]'")
         conn.commit()
 
 
 def _row_to_post(row: sqlite3.Row) -> StoredPost:
+    image_paths = json.loads(row["image_paths"] or "[]")
+    media_items_raw = row["media_items"] if "media_items" in row.keys() else "[]"
+    media_items = json.loads(media_items_raw or "[]")
+    if not media_items and image_paths:
+        media_items = [{"type": "image", "path": p} for p in image_paths]
     return StoredPost(
         id=row["id"],
         source_key=row["source_key"],
         chat_id=row["chat_id"],
         message_ids=json.loads(row["message_ids"] or "[]"),
-        image_paths=json.loads(row["image_paths"] or "[]"),
+        image_paths=image_paths,
+        media_items=media_items,
         text_original=row["text_original"] or "",
         text_cleaned=row["text_cleaned"] or "",
         text_formatted=row["text_formatted"] or "",
@@ -116,6 +127,7 @@ def add_or_ignore(post: StoredPost) -> bool:
             """
             INSERT OR IGNORE INTO posts(
                 id, source_key, chat_id, message_ids, image_paths,
+                media_items,
                 text_original, text_cleaned, text_formatted, text_final,
                 media_count, status, error, blocked_reason, created_at, updated_at, published_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -126,6 +138,7 @@ def add_or_ignore(post: StoredPost) -> bool:
                 post.chat_id,
                 json.dumps(post.message_ids, ensure_ascii=False),
                 json.dumps(post.image_paths, ensure_ascii=False),
+                json.dumps(post.media_items, ensure_ascii=False),
                 post.text_original,
                 post.text_cleaned,
                 post.text_formatted,
@@ -147,7 +160,7 @@ def update(post_id: str, **kwargs: Any) -> None:
     if not kwargs:
         return
     serializable = dict(kwargs)
-    for key in ("message_ids", "image_paths"):
+    for key in ("message_ids", "image_paths", "media_items"):
         if key in serializable:
             serializable[key] = json.dumps(serializable[key], ensure_ascii=False)
     serializable["updated_at"] = datetime.now(timezone.utc).isoformat()
@@ -198,8 +211,12 @@ def delete_posts_and_media(post_ids: list[str], media_dir: Path) -> dict[str, in
         ).fetchall()
         media_deleted = 0
         for row in rows:
+            items = json.loads(row["media_items"] or "[]")
             paths = json.loads(row["image_paths"] or "[]")
-            for p in paths:
+            if not items and paths:
+                items = [{"type": "image", "path": p} for p in paths]
+            for item in items:
+                p = item.get("path", "")
                 name = Path(str(p).replace("/media/", "")).name
                 fp = media_dir / name
                 if fp.exists():
@@ -251,22 +268,31 @@ def validate_and_cleanup(media_dir: Path) -> dict[str, int]:
             conn.execute(f"DELETE FROM posts WHERE rowid IN ({q})", remove_rowids)
             dedup_removed = len(remove_rowids)
 
-        rows = conn.execute("SELECT id, image_paths FROM posts").fetchall()
+        rows = conn.execute("SELECT id, image_paths, media_items FROM posts").fetchall()
         referenced_files: set[str] = set()
         for row in rows:
             paths = json.loads(row["image_paths"] or "[]")
+            items = json.loads(row["media_items"] or "[]")
+            if not items and paths:
+                items = [{"type": "image", "path": p} for p in paths]
+            item_kept: list[dict[str, str]] = []
             kept: list[str] = []
-            for p in paths:
+            for item in items:
+                p = item.get("path", "")
                 name = Path(str(p).replace("/media/", "")).name
                 abs_path = media_dir / name
                 if abs_path.exists():
-                    kept.append(f"/media/{name}")
+                    new_path = f"/media/{name}"
+                    if item.get("type") == "image":
+                        kept.append(new_path)
+                    item_kept.append({"type": item.get("type", "file"), "path": new_path})
                     referenced_files.add(name)
-            if kept != paths:
+            if kept != paths or item_kept != items:
                 conn.execute(
-                    "UPDATE posts SET image_paths = ?, updated_at = ? WHERE id = ?",
+                    "UPDATE posts SET image_paths = ?, media_items = ?, updated_at = ? WHERE id = ?",
                     (
                         json.dumps(kept, ensure_ascii=False),
+                        json.dumps(item_kept, ensure_ascii=False),
                         datetime.now(timezone.utc).isoformat(),
                         row["id"],
                     ),
