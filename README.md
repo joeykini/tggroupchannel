@@ -77,7 +77,7 @@ python forwarder.py
 | `OPENAI_*` | Key、Base URL、模型名 |
 | `FILTER_KEYWORDS` | 只转发含关键词的消息 |
 
-网页保存的配置写入 `settings.json`；`.env` 中的同名项会覆盖。
+网页保存的配置写入 `settings.json`，且优先级高于 `.env`（`.env` 仅作为默认值）。
 
 ## 安全提示
 

@@ -1,4 +1,4 @@
-"""配置：从 .env 与 settings.json 读取/保存。"""
+"""配置：默认读 .env，网页保存(settings.json)优先覆盖。"""
 
 from __future__ import annotations
 
@@ -149,13 +149,8 @@ class Settings:
 
 
 def load_settings() -> Settings:
+    # 先用 .env 作为默认值，再用 settings.json 覆盖，避免网页配置不生效
     data: dict = {}
-    if SETTINGS_PATH.exists():
-        try:
-            data = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            pass
-
     env_map = {
         "api_id": os.getenv("API_ID"),
         "api_hash": os.getenv("API_HASH"),
@@ -186,6 +181,15 @@ def load_settings() -> Settings:
     for k, v in env_map.items():
         if v is not None and str(v).strip() != "":
             data[k] = v
+
+    if SETTINGS_PATH.exists():
+        try:
+            file_data = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
+            for k, v in file_data.items():
+                if v is not None and str(v).strip() != "":
+                    data[k] = v
+        except json.JSONDecodeError:
+            pass
 
     return Settings.from_dict(data)
 

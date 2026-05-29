@@ -38,6 +38,16 @@ _last_daily_run: str = ""
 
 def _format_tg_error(exc: BaseException) -> str:
     msg = str(exc) or type(exc).__name__
+    lower = msg.lower()
+    if "api_id/api_hash combination is invalid" in lower or "api id invalid" in lower:
+        return (
+            "API_ID / API_HASH 无效或不匹配。请到 my.telegram.org 重新复制一对，"
+            "先点“保存配置”，再重新“发送验证码”。"
+        )
+    if "phone code" in lower and "expired" in lower:
+        return "验证码已过期，请重新点击“发送验证码”。"
+    if "phone code hash" in lower:
+        return "验证码会话无效，请重新点击“发送验证码”。"
     if "Connection to Telegram failed" in msg or "Timeout" in msg:
         return (
             "无法连接 Telegram 服务器。请开启 VPN/代理并配置 TELEGRAM_PROXY，"

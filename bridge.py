@@ -95,6 +95,8 @@ class ChannelBridge:
 
     async def login_send_code(self, phone: str) -> dict:
         self.settings = load_settings()
+        if self._client and self._client.is_connected():
+            await self._client.disconnect()
         client = create_client(self.settings)
         await client.connect()
         self._client = client
