@@ -1,0 +1,10 @@
+.env
+settings.json
+.venv/
+__pycache__/
+*.session
+*.session-journal
+forwarder.log
+data/media/
+data/*.db
+*.log

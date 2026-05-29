@@ -1,0 +1,438 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Telegram 抓取发布控制台</title>
+  <style>
+    :root { --bg: #0f1419; --card: #1a2332; --text: #e7ecf3; --muted: #8b9cb3; --accent: #2aabee; --ok: #3dd68c; --err: #f07178; --warn:#f5b14c; }
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 24px; line-height: 1.5; }
+    h1 { font-size: 1.4rem; margin: 0 0 8px; }
+    .sub { color: var(--muted); font-size: 0.9rem; margin-bottom: 24px; }
+    .layout { display: grid; grid-template-columns: 420px 1fr; gap: 20px; align-items: start; max-width: 1500px; }
+    @media (max-width: 960px) { .layout { grid-template-columns: 1fr; } }
+    .grid { display: grid; gap: 16px; }
+    section { background: var(--card); border-radius: 12px; padding: 20px; }
+    h2 { font-size: 1rem; margin: 0 0 12px; color: var(--accent); }
+    label { display: block; font-size: 0.85rem; color: var(--muted); margin: 10px 0 4px; }
+    input, textarea { width: 100%; padding: 10px; border: 1px solid #2d3a4d; border-radius: 8px; background: #0d1117; color: var(--text); }
+    textarea { min-height: 72px; resize: vertical; }
+    .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-top: 12px; }
+    button { padding: 10px 18px; border: none; border-radius: 8px; cursor: pointer; font-weight: 600; }
+    .primary { background: var(--accent); color: #fff; }
+    .danger { background: #5c2a2a; color: #ffc9c9; }
+    .ghost { background: #2d3a4d; color: var(--text); }
+  .badge { display: inline-block; padding: 4px 10px; border-radius: 999px; font-size: 0.8rem; }
+    .badge.ok { background: #1a3d2e; color: var(--ok); }
+    .badge.no { background: #3d1a1a; color: var(--err); }
+    #logs { font-family: ui-monospace, monospace; font-size: 0.8rem; max-height: 220px; overflow-y: auto; background: #0d1117; padding: 12px; border-radius: 8px; }
+    #logs div { margin-bottom: 4px; }
+    #logs .ERROR { color: var(--err); }
+    .check { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+    .check input { width: auto; }
+    /* 瀑布流 */
+    .waterfall { column-count: 2; column-gap: 14px; }
+    @media (max-width: 700px) { .waterfall { column-count: 1; } }
+    .post-card { break-inside: avoid; background: #121a24; border-radius: 12px; margin-bottom: 14px; overflow: hidden; border: 1px solid #2d3a4d; }
+    .post-card .status { font-size: 0.75rem; padding: 6px 12px; background: #0d1117; color: var(--muted); }
+    .post-card .status.sent { color: var(--ok); }
+    .post-card .status.failed { color: var(--err); }
+    .post-card .status.pending { color: var(--warn); }
+    .post-card .status.blocked { color: #b1b1b1; }
+    .album { display: grid; gap: 2px; background: #000; }
+    .album.n1 { grid-template-columns: 1fr; }
+    .album.n2 { grid-template-columns: 1fr 1fr; }
+    .album.n3 { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; }
+    .album.n3 img:first-child { grid-row: span 2; }
+    .album.n4 { grid-template-columns: 1fr 1fr; grid-template-rows: repeat(3, 72px); }
+    .album.n4 img:first-child { grid-row: 1 / span 3; }
+    .album img { width: 100%; height: 100%; object-fit: cover; display: block; min-height: 72px; }
+    .post-body { padding: 12px; font-size: 0.85rem; white-space: pre-wrap; word-break: break-word; max-height: 280px; overflow-y: auto; }
+    .tabs { display: flex; gap: 8px; padding: 8px 12px 0; }
+    .tabs button { background: transparent; border: 1px solid #2d3a4d; color: var(--muted); padding: 4px 10px; font-size: 0.75rem; }
+    .tabs button.active { border-color: var(--accent); color: var(--accent); }
+    .panel-wide { max-width: none; }
+    .toolbar { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:12px; }
+    .tiny { padding: 6px 10px; font-size: 0.78rem; }
+    .checkbox-row { padding: 8px 12px 0; color: var(--muted); font-size: 0.8rem; }
+  </style>
+</head>
+<body>
+  <h1>Telegram 抓取发布控制台</h1>
+  <p class="sub">源频道抓取 → 瀑布流待发布池 → AI 改写与去源站 → 批量发布到目标频道</p>
+
+  <div class="layout">
+  <div class="grid">
+    <section>
+      <h2>状态</h2>
+      <span id="loginBadge" class="badge no">未登录</span>
+      <span id="runBadge" class="badge no">未运行</span> <span id="pendingBadge" class="badge no">待发布 0</span>
+      <div class="row">
+        <button class="primary" id="btnStart">开始监听</button>
+        <button class="danger" id="btnStop">停止</button>
+        <button class="ghost" onclick="refreshStatus()">刷新</button>
+      </div>
+      <div class="row">
+        <button class="ghost" id="btnFetchOnce">立即抓取一次</button>
+        <button class="ghost" id="btnValidateDb">校验数据库/媒体</button>
+      </div>
+    </section>
+
+    <section>
+      <h2>① Telegram 登录（首次）</h2>
+      <label>手机号（含国际区号，如 +8613800138000）</label>
+      <input id="phone" placeholder="+86..." />
+      <div class="row">
+        <button class="ghost" id="btnSendCode">发送验证码</button>
+      </div>
+      <label>验证码</label>
+      <input id="code" placeholder="12345" />
+      <label>二步验证密码（若开启）</label>
+      <input id="password" type="password" placeholder="可选" />
+      <div class="row">
+        <button class="primary" id="btnLogin">确认登录</button>
+      </div>
+      <input type="hidden" id="phoneCodeHash" />
+    </section>
+
+    <section>
+      <h2>② 配置</h2>
+      <label>API_ID</label>
+      <input id="apiId" type="number" />
+      <label>API_HASH</label>
+      <input id="apiHash" />
+      <label>Telegram 代理（国内必填，例 socks5://127.0.0.1:7890）</label>
+      <input id="telegramProxy" placeholder="socks5://127.0.0.1:7890" />
+      <label>源频道（逗号分隔，如 @a,@b）</label>
+      <input id="sourceChannels" />
+      <label>目标频道</label>
+      <input id="targetChannel" placeholder="@my_channel" />
+      <label>关键词过滤（可选，逗号分隔）</label>
+      <input id="filterKeywords" />
+      <label>广告屏蔽词（逗号分隔，命中直接不抓取）</label>
+      <input id="blockedKeywords" placeholder="vpn,机场,广告,推广,博彩" />
+      <label>转发页眉（可选）</label>
+      <input id="forwardHeader" />
+      <div class="check">
+        <input type="checkbox" id="copyMode" checked />
+        <label for="copyMode" style="margin:0">复制发送（保留图文，不显示「转发自」）</label>
+      </div>
+      <div class="check">
+        <input type="checkbox" id="aiEnabled" />
+        <label for="aiEnabled" style="margin:0">开启 AI 复写（仅改配文，保留评分/链接/数字）</label>
+      </div>
+      <div class="check">
+        <input type="checkbox" id="autoPublish" checked />
+        <label for="autoPublish" style="margin:0">自动发布到目标频道</label>
+      </div>
+      <div class="check">
+        <input type="checkbox" id="requireMedia" />
+        <label for="requireMedia" style="margin:0">仅处理带图片的帖子（跳过高纯文字）</label>
+      </div>
+      <div class="check">
+        <input type="checkbox" id="stripSourceRefs" checked />
+        <label for="stripSourceRefs" style="margin:0">删除源站痕迹（@用户名、t.me、联系方式行）</label>
+      </div>
+      <label>每天定时抓取时间（HH:MM）</label>
+      <input id="dailyFetchTime" value="03:00" />
+      <div class="check">
+        <input type="checkbox" id="dailyFetchEnabled" />
+        <label for="dailyFetchEnabled" style="margin:0">启用每日定时抓取</label>
+      </div>
+      <label>每日抓取每频道条数</label>
+      <input id="dailyFetchLimit" type="number" value="30" />
+      <div class="check">
+        <input type="checkbox" id="fetchOnStart" />
+        <label for="fetchOnStart" style="margin:0">启动监听时先补抓一轮</label>
+      </div>
+      <label>OpenAI API Key（或兼容接口的 Key）</label>
+      <input id="openaiKey" type="password" />
+      <label>API Base URL</label>
+      <input id="openaiBase" value="https://api.openai.com/v1" />
+      <label>模型</label>
+      <input id="openaiModel" value="gpt-4o-mini" />
+      <label>AI 系统提示词</label>
+      <textarea id="aiPrompt"></textarea>
+      <div class="check">
+        <input type="checkbox" id="botEnabled" />
+        <label for="botEnabled" style="margin:0">启用 Telegram Bot 推送</label>
+      </div>
+      <label>Bot Token</label>
+      <input id="botToken" type="password" />
+      <label>Bot Chat ID</label>
+      <input id="botChatId" />
+      <div class="row">
+        <button class="primary" id="btnSave">保存配置</button>
+      </div>
+    </section>
+
+    <section>
+      <h2>日志</h2>
+      <div id="logs"></div>
+    </section>
+  </div>
+
+  <section class="panel-wide">
+    <h2>抓取预览（瀑布流待发布池）</h2>
+    <p style="color:var(--muted);font-size:0.85rem;margin:0 0 12px">
+      支持多选批量发布，AI 文案与最终发送文案可切换查看。
+    </p>
+    <div class="toolbar">
+      <button class="primary tiny" id="btnPublishSelected">发布选中</button>
+      <button class="ghost tiny" id="btnPublishPending">发布全部待发布</button>
+      <button class="danger tiny" id="btnDeleteSelected">删除选中</button>
+      <button class="ghost tiny" id="btnShowPending">仅看待发布</button>
+      <button class="ghost tiny" id="btnShowAll">查看全部</button>
+    </div>
+    <div id="waterfall" class="waterfall"></div>
+  </section>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+
+    async function api(path, opts = {}) {
+      const r = await fetch(path, {
+        headers: { "Content-Type": "application/json" },
+        ...opts,
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.detail || r.statusText);
+      return data;
+    }
+
+    function renderLogs(logs) {
+      $("logs").innerHTML = (logs || []).slice(-80).map(
+        (l) => `<div class="${l.level}">[${l.level}] ${l.message}</div>`
+      ).join("") || "<div>暂无日志</div>";
+    }
+
+    let statusFilter = "";
+    function selectedIds() {
+      return [...document.querySelectorAll(".post-select:checked")].map(el => el.value);
+    }
+
+    async function refreshStatus() {
+      const s = await api("/api/status");
+      $("loginBadge").textContent = s.logged_in ? "已登录 Telegram" : "未登录";
+      $("loginBadge").className = "badge " + (s.logged_in ? "ok" : "no");
+      $("runBadge").textContent = s.bridge_running ? "监听运行中" : "未运行";
+      $("runBadge").className = "badge " + (s.bridge_running ? "ok" : "no");
+      $("pendingBadge").textContent = `待发布 ${s.pending_count || 0}`;
+      $("pendingBadge").className = "badge " + ((s.pending_count || 0) > 0 ? "ok" : "no");
+      renderLogs(s.logs);
+    }
+
+    async function loadConfig() {
+      const c = await api("/api/config");
+      $("apiId").value = c.api_id || "";
+      $("apiHash").value = c.api_hash || "";
+      $("telegramProxy").value = c.telegram_proxy || "";
+      $("sourceChannels").value = c.source_channels || "";
+      $("targetChannel").value = c.target_channel || "";
+      $("filterKeywords").value = c.filter_keywords || "";
+      $("blockedKeywords").value = c.blocked_keywords || "";
+      $("forwardHeader").value = c.forward_header || "";
+      $("copyMode").checked = c.copy_without_forward_tag !== false;
+      $("aiEnabled").checked = !!c.ai_enabled;
+      $("autoPublish").checked = c.auto_publish !== false;
+      $("requireMedia").checked = !!c.require_media;
+      $("stripSourceRefs").checked = c.strip_source_refs !== false;
+      $("dailyFetchEnabled").checked = !!c.daily_fetch_enabled;
+      $("dailyFetchTime").value = c.daily_fetch_time || "03:00";
+      $("dailyFetchLimit").value = c.daily_fetch_limit || 30;
+      $("fetchOnStart").checked = !!c.fetch_on_start;
+      $("openaiBase").value = c.openai_base_url || "https://api.openai.com/v1";
+      $("openaiModel").value = c.openai_model || "gpt-4o-mini";
+      $("aiPrompt").value = c.ai_prompt || "";
+      $("botEnabled").checked = !!c.bot_enabled;
+      $("botChatId").value = c.bot_chat_id || "";
+    }
+
+    async function saveConfig() {
+      await api("/api/config", {
+        method: "POST",
+        body: JSON.stringify({
+          api_id: parseInt($("apiId").value, 10),
+          api_hash: $("apiHash").value.trim(),
+          telegram_proxy: $("telegramProxy").value.trim(),
+          source_channels: $("sourceChannels").value.trim(),
+          target_channel: $("targetChannel").value.trim(),
+          filter_keywords: $("filterKeywords").value.trim(),
+          blocked_keywords: $("blockedKeywords").value.trim(),
+          forward_header: $("forwardHeader").value.trim(),
+          copy_without_forward_tag: $("copyMode").checked,
+          ai_enabled: $("aiEnabled").checked,
+          auto_publish: $("autoPublish").checked,
+          require_media: $("requireMedia").checked,
+          strip_source_refs: $("stripSourceRefs").checked,
+          daily_fetch_enabled: $("dailyFetchEnabled").checked,
+          daily_fetch_time: $("dailyFetchTime").value.trim(),
+          daily_fetch_limit: parseInt($("dailyFetchLimit").value, 10) || 30,
+          fetch_on_start: $("fetchOnStart").checked,
+          openai_api_key: $("openaiKey").value.trim(),
+          openai_base_url: $("openaiBase").value.trim(),
+          openai_model: $("openaiModel").value.trim(),
+          ai_prompt: $("aiPrompt").value.trim(),
+          bot_enabled: $("botEnabled").checked,
+          bot_token: $("botToken").value.trim(),
+          bot_chat_id: $("botChatId").value.trim(),
+        }),
+      });
+      alert("配置已保存");
+    }
+
+    $("btnSave").onclick = () => saveConfig().catch((e) => alert(e.message));
+    $("btnSendCode").onclick = async () => {
+      try {
+        const r = await api("/api/login/send_code", {
+          method: "POST",
+          body: JSON.stringify({ phone: $("phone").value.trim() }),
+        });
+        $("phoneCodeHash").value = r.phone_code_hash;
+        alert("验证码已发送");
+      } catch (e) { alert(e.message); }
+    };
+    $("btnLogin").onclick = async () => {
+      try {
+        const r = await api("/api/login/confirm", {
+          method: "POST",
+          body: JSON.stringify({
+            phone: $("phone").value.trim(),
+            code: $("code").value.trim(),
+            phone_code_hash: $("phoneCodeHash").value,
+            password: $("password").value || null,
+          }),
+        });
+        if (r.need_2fa) { alert("需要二步验证密码，填写后再次点击确认登录"); return; }
+        alert("登录成功: " + (r.user || ""));
+        refreshStatus();
+      } catch (e) { alert(e.message); }
+    };
+    $("btnStart").onclick = async () => {
+      try {
+        await api("/api/bridge/start", { method: "POST" });
+        refreshStatus();
+      } catch (e) { alert(e.message); }
+    };
+    $("btnStop").onclick = async () => {
+      await api("/api/bridge/stop", { method: "POST" });
+      refreshStatus();
+    };
+    $("btnFetchOnce").onclick = async () => {
+      try {
+        await api("/api/fetch/once", { method: "POST", body: JSON.stringify({ limit: parseInt($("dailyFetchLimit").value, 10) || 30 }) });
+        refreshPosts();
+      } catch (e) { alert(e.message); }
+    };
+    $("btnValidateDb").onclick = async () => {
+      try {
+        const r = await api("/api/maintenance/validate", { method: "POST" });
+        alert(`校验完成: 去重 ${r.dedup_removed}, 修复媒体 ${r.media_fixed}, 删除孤儿文件 ${r.orphan_deleted}`);
+        refreshPosts();
+      } catch (e) { alert(e.message); }
+    };
+
+    function escapeHtml(s) {
+      return (s || "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+    }
+
+    function albumHtml(paths) {
+      if (!paths || !paths.length) return '<div class="post-body" style="color:var(--muted)">纯文字帖</div>';
+      const n = Math.min(paths.length, 4);
+      const cls = paths.length >= 4 ? "n4" : paths.length === 3 ? "n3" : paths.length === 2 ? "n2" : "n1";
+      const imgs = paths.slice(0, 4).map(p => `<img src="${p}" alt="" loading="lazy" />`).join("");
+      return `<div class="album ${cls}">${imgs}</div>`;
+    }
+
+    function renderWaterfall(posts) {
+      const el = $("waterfall");
+      if (!posts || !posts.length) {
+        el.innerHTML = '<p style="color:var(--muted)">暂无抓取记录，请先开始监听并等待源频道发帖</p>';
+        return;
+      }
+      el.innerHTML = posts.map(p => {
+        const st = p.status || "captured";
+        const showAi = p.text_final || p.text_formatted || p.text_cleaned;
+        return `
+        <article class="post-card" data-id="${p.id}">
+          <div class="status ${st}">${st} · ${p.media_count || 0} 图 · ${new Date(p.created_at).toLocaleString()}</div>
+          ${albumHtml(p.image_paths)}
+          <div class="checkbox-row"><label><input class="post-select" type="checkbox" value="${p.id}" /> 选中本条</label></div>
+          <div class="tabs">
+            <button type="button" class="active" data-tab="orig" data-id="${p.id}">原文</button>
+            <button type="button" data-tab="clean" data-id="${p.id}">去源站</button>
+            <button type="button" data-tab="ai" data-id="${p.id}">AI / 待发</button>
+          </div>
+          <div class="post-body" id="body-orig-${p.id}">${escapeHtml(p.text_original || "（无配文）")}</div>
+          <div class="post-body" id="body-clean-${p.id}" style="display:none">${escapeHtml(p.text_cleaned || "—")}</div>
+          <div class="post-body" id="body-ai-${p.id}" style="display:none">${escapeHtml(showAi || "—")}</div>
+          ${p.blocked_reason ? `<div class="post-body" style="color:#f5b14c">过滤原因：${escapeHtml(p.blocked_reason)}</div>` : ""}
+        </article>`;
+      }).join("");
+      el.querySelectorAll(".tabs button").forEach(btn => {
+        btn.onclick = () => {
+          const id = btn.dataset.id;
+          const card = btn.closest(".post-card");
+          card.querySelectorAll(".tabs button").forEach(b => b.classList.remove("active"));
+          btn.classList.add("active");
+          const orig = $("body-orig-" + id);
+          const clean = $("body-clean-" + id);
+          const ai = $("body-ai-" + id);
+          orig.style.display = "none";
+          clean.style.display = "none";
+          ai.style.display = "none";
+          if (btn.dataset.tab === "orig") orig.style.display = "block";
+          if (btn.dataset.tab === "clean") clean.style.display = "block";
+          if (btn.dataset.tab === "ai") {
+            ai.style.display = "block";
+          }
+        };
+      });
+    }
+
+    async function refreshPosts() {
+      try {
+        const query = statusFilter ? `/api/posts?limit=80&status=${encodeURIComponent(statusFilter)}` : "/api/posts?limit=80";
+        const { posts } = await api(query);
+        renderWaterfall(posts);
+      } catch (_) {}
+    }
+
+    $("btnPublishSelected").onclick = async () => {
+      const ids = selectedIds();
+      if (!ids.length) return alert("请先选择帖子");
+      try {
+        const r = await api("/api/posts/publish", { method: "POST", body: JSON.stringify({ ids, all_pending: false }) });
+        alert(`发布完成：成功 ${r.published}，失败 ${r.failed}`);
+        refreshPosts(); refreshStatus();
+      } catch (e) { alert(e.message); }
+    };
+    $("btnPublishPending").onclick = async () => {
+      try {
+        const r = await api("/api/posts/publish", { method: "POST", body: JSON.stringify({ all_pending: true }) });
+        alert(`发布完成：成功 ${r.published}，失败 ${r.failed}`);
+        refreshPosts(); refreshStatus();
+      } catch (e) { alert(e.message); }
+    };
+    $("btnDeleteSelected").onclick = async () => {
+      const ids = selectedIds();
+      if (!ids.length) return alert("请先选择帖子");
+      try {
+        const r = await api("/api/posts/delete", { method: "POST", body: JSON.stringify({ ids }) });
+        alert(`删除 ${r.removed} 条`);
+        refreshPosts(); refreshStatus();
+      } catch (e) { alert(e.message); }
+    };
+    $("btnShowPending").onclick = () => { statusFilter = "pending"; refreshPosts(); };
+    $("btnShowAll").onclick = () => { statusFilter = ""; refreshPosts(); };
+
+    loadConfig();
+    refreshStatus();
+    refreshPosts();
+    setInterval(refreshStatus, 4000);
+    setInterval(refreshPosts, 3000);
+  </script>
+</body>
+</html>
