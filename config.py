@@ -88,7 +88,7 @@ class Settings:
     bot_token: str = ""
     bot_chat_id: str = ""
 
-    def validate_for_run(self) -> list[str]:
+    def validate_for_capture(self) -> list[str]:
         errors: list[str] = []
         if not self.api_id:
             errors.append("缺少 API_ID")
@@ -96,12 +96,18 @@ class Settings:
             errors.append("缺少 API_HASH")
         if not self.source_channels:
             errors.append("请配置至少一个源频道 SOURCE_CHANNELS")
-        if not self.target_channel:
-            errors.append("请配置目标频道 TARGET_CHANNEL")
+        if self.auto_publish and not self.target_channel:
+            errors.append("开启自动发布时必须配置目标频道 TARGET_CHANNEL")
         if self.ai_enabled and not self.openai_api_key:
             errors.append("已开启 AI 复写，请填写 OPENAI_API_KEY")
         if self.bot_enabled and (not self.bot_token or not self.bot_chat_id):
             errors.append("已开启 Bot 推送，请填写 BOT_TOKEN 与 BOT_CHAT_ID")
+        return errors
+
+    def validate_for_publish(self) -> list[str]:
+        errors = self.validate_for_capture()
+        if not self.target_channel:
+            errors.append("发布前请先配置目标频道 TARGET_CHANNEL")
         return errors
 
     def to_dict(self) -> dict:

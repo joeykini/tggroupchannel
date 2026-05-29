@@ -274,7 +274,12 @@ async def bridge_stop() -> dict:
 @app.post("/api/fetch/once")
 async def fetch_once(body: FetchBody) -> dict:
     try:
-        return await _bridge.fetch_recent_once(limit_per_channel=max(1, body.limit))
+        task = asyncio.create_task(
+            _bridge.fetch_recent_once(limit_per_channel=max(1, body.limit))
+        )
+        return await asyncio.shield(task)
+    except asyncio.CancelledError as e:
+        raise HTTPException(503, "抓取任务被中断，请稍后重试") from e
     except Exception as e:
         raise HTTPException(400, str(e)) from e
 

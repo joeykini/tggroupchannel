@@ -271,6 +271,9 @@ class ChannelBridge:
 
     async def publish_posts(self, post_ids: list[str]) -> dict:
         self.reload_settings()
+        errs = self.settings.validate_for_publish()
+        if errs:
+            raise ValueError("; ".join(errs))
         if not post_ids:
             return {"published": 0, "failed": 0}
         client = await self._get_send_client()
@@ -309,7 +312,7 @@ class ChannelBridge:
 
     async def fetch_recent_once(self, limit_per_channel: int = 30) -> dict:
         self.reload_settings()
-        errs = self.settings.validate_for_run()
+        errs = self.settings.validate_for_capture()
         if errs:
             raise ValueError("; ".join(errs))
         client = await self._get_send_client()
@@ -368,7 +371,7 @@ class ChannelBridge:
         if self._running:
             return
         self.reload_settings()
-        errs = self.settings.validate_for_run()
+        errs = self.settings.validate_for_capture()
         if errs:
             raise ValueError("; ".join(errs))
 

@@ -36,7 +36,8 @@
     /* 瀑布流 */
     .waterfall { column-count: 2; column-gap: 14px; }
     @media (max-width: 700px) { .waterfall { column-count: 1; } }
-    .post-card { break-inside: avoid; background: var(--card-2); border-radius: 12px; margin-bottom: 14px; overflow: hidden; border: 1px solid #2d3a4d; }
+    .post-card { break-inside: avoid; background: var(--card-2); border-radius: 12px; margin-bottom: 14px; overflow: hidden; border: 1px solid #2d3a4d; cursor: pointer; }
+    .post-card.selected { border-color: var(--accent); box-shadow: 0 0 0 1px rgba(42,171,238,.3) inset; }
     .post-card .status { font-size: 0.75rem; padding: 6px 12px; background: #0d1117; color: var(--muted); }
     .post-card .status.sent { color: var(--ok); }
     .post-card .status.failed { color: var(--err); }
@@ -57,7 +58,7 @@
     .panel-wide { max-width: none; min-height: 70vh; }
     .toolbar { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:12px; }
     .tiny { padding: 6px 10px; font-size: 0.78rem; }
-    .checkbox-row { padding: 8px 12px 0; color: var(--muted); font-size: 0.8rem; }
+    .post-meta { padding: 8px 12px 0; color: var(--muted); font-size: 0.78rem; }
   </style>
 </head>
 <body>
@@ -114,8 +115,8 @@
       <input id="telegramProxy" placeholder="socks5://127.0.0.1:7890" />
       <label>源频道（逗号分隔，如 @a,@b）</label>
       <input id="sourceChannels" />
-      <label>目标频道</label>
-      <input id="targetChannel" placeholder="@my_channel" />
+      <label>目标频道（可先留空，本地处理后发布前再填）</label>
+      <input id="targetChannel" placeholder="@my_channel 或 -100..." />
       <label>关键词过滤（可选，逗号分隔）</label>
       <input id="filterKeywords" />
       <label>广告屏蔽词（逗号分隔，命中直接不抓取）</label>
@@ -192,6 +193,7 @@
       <button class="danger tiny" id="btnDeleteSelected">删除选中</button>
       <button class="ghost tiny" id="btnShowPending">仅看待发布</button>
       <button class="ghost tiny" id="btnShowAll">查看全部</button>
+      <button class="ghost tiny" id="btnClearSelected">清空选择</button>
     </div>
     <div id="waterfall" class="waterfall"></div>
   </section>
@@ -218,8 +220,9 @@
     }
 
     let statusFilter = "";
+    const selectedPostIds = new Set();
     function selectedIds() {
-      return [...document.querySelectorAll(".post-select:checked")].map(el => el.value);
+      return [...selectedPostIds];
     }
 
     async function refreshStatus() {
@@ -364,11 +367,12 @@
       el.innerHTML = posts.map(p => {
         const st = p.status || "captured";
         const showAi = p.text_final || p.text_formatted || p.text_cleaned;
+        const selected = selectedPostIds.has(p.id) ? "selected" : "";
         return `
-        <article class="post-card" data-id="${p.id}">
+        <article class="post-card ${selected}" data-id="${p.id}">
           <div class="status ${st}">${st} · ${p.media_count || 0} 图 · ${new Date(p.created_at).toLocaleString()}</div>
           ${albumHtml(p.image_paths)}
-          <div class="checkbox-row"><label><input class="post-select" type="checkbox" value="${p.id}" /> 选中本条</label></div>
+          <div class="post-meta">${selected ? "已选中" : "点击卡片可选中批量操作"}</div>
           <div class="tabs">
             <button type="button" class="active" data-tab="orig" data-id="${p.id}">原文</button>
             <button type="button" data-tab="clean" data-id="${p.id}">去源站</button>
@@ -380,6 +384,15 @@
           ${p.blocked_reason ? `<div class="post-body" style="color:#f5b14c">过滤原因：${escapeHtml(p.blocked_reason)}</div>` : ""}
         </article>`;
       }).join("");
+      el.querySelectorAll(".post-card").forEach(card => {
+        card.onclick = (e) => {
+          if (e.target.closest(".tabs")) return;
+          const id = card.dataset.id;
+          if (selectedPostIds.has(id)) selectedPostIds.delete(id);
+          else selectedPostIds.add(id);
+          renderWaterfall(posts);
+        };
+      });
       el.querySelectorAll(".tabs button").forEach(btn => {
         btn.onclick = () => {
           const id = btn.dataset.id;
@@ -431,8 +444,13 @@
       try {
         const r = await api("/api/posts/delete", { method: "POST", body: JSON.stringify({ ids }) });
         alert(`删除 ${r.removed} 条`);
+        ids.forEach(id => selectedPostIds.delete(id));
         refreshPosts(); refreshStatus();
       } catch (e) { alert(e.message); }
+    };
+    $("btnClearSelected").onclick = () => {
+      selectedPostIds.clear();
+      refreshPosts();
     };
     $("btnShowPending").onclick = () => { statusFilter = "pending"; refreshPosts(); };
     $("btnShowAll").onclick = () => { statusFilter = ""; refreshPosts(); };
