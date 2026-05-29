@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 from bridge import ChannelBridge, MEDIA_DIR
 from config import Settings, load_settings, save_settings
 from post_store import (
-    delete_posts,
+    delete_posts_and_media,
     list_pending_ids,
     list_posts,
     validate_and_cleanup,
@@ -298,8 +298,8 @@ async def publish_posts(body: PublishBody) -> dict:
 
 @app.post("/api/posts/delete")
 async def api_delete_posts(body: DeleteBody) -> dict:
-    removed = delete_posts(body.ids)
-    return {"ok": True, "removed": removed}
+    result = delete_posts_and_media(body.ids, MEDIA_DIR)
+    return {"ok": True, **result}
 
 
 @app.post("/api/maintenance/validate")

@@ -191,10 +191,13 @@
       <button class="primary tiny" id="btnPublishSelected">发布选中</button>
       <button class="ghost tiny" id="btnPublishPending">发布全部待发布</button>
       <button class="danger tiny" id="btnDeleteSelected">删除选中</button>
+      <button class="ghost tiny" id="btnSelectAllVisible">全选当前列表</button>
+      <button class="ghost tiny" id="btnInvertVisible">反选当前列表</button>
       <button class="ghost tiny" id="btnShowPending">仅看待发布</button>
       <button class="ghost tiny" id="btnShowAll">查看全部</button>
       <button class="ghost tiny" id="btnClearSelected">清空选择</button>
     </div>
+    <p id="filterTip" style="color:var(--muted);font-size:.8rem;margin:0 0 10px"></p>
     <div id="waterfall" class="waterfall"></div>
   </section>
   </div>
@@ -414,10 +417,13 @@
       });
     }
 
+    let lastPosts = [];
     async function refreshPosts() {
       try {
         const query = statusFilter ? `/api/posts?limit=80&status=${encodeURIComponent(statusFilter)}` : "/api/posts?limit=80";
         const { posts } = await api(query);
+        lastPosts = posts || [];
+        $("filterTip").textContent = statusFilter ? `当前筛选：${statusFilter}` : "当前筛选：全部";
         renderWaterfall(posts);
       } catch (_) {}
     }
@@ -443,7 +449,7 @@
       if (!ids.length) return alert("请先选择帖子");
       try {
         const r = await api("/api/posts/delete", { method: "POST", body: JSON.stringify({ ids }) });
-        alert(`删除 ${r.removed} 条`);
+        alert(`删除 ${r.removed} 条，清理媒体 ${r.media_deleted || 0} 个`);
         ids.forEach(id => selectedPostIds.delete(id));
         refreshPosts(); refreshStatus();
       } catch (e) { alert(e.message); }
@@ -454,6 +460,17 @@
     };
     $("btnShowPending").onclick = () => { statusFilter = "pending"; refreshPosts(); };
     $("btnShowAll").onclick = () => { statusFilter = ""; refreshPosts(); };
+    $("btnSelectAllVisible").onclick = () => {
+      lastPosts.forEach(p => selectedPostIds.add(p.id));
+      refreshPosts();
+    };
+    $("btnInvertVisible").onclick = () => {
+      lastPosts.forEach(p => {
+        if (selectedPostIds.has(p.id)) selectedPostIds.delete(p.id);
+        else selectedPostIds.add(p.id);
+      });
+      refreshPosts();
+    };
 
     loadConfig();
     refreshStatus();

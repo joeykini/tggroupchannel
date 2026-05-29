@@ -51,6 +51,7 @@ class ChannelBridge:
         self._client: TelegramClient | None = None
         self._task: asyncio.Task | None = None
         self._running = False
+        self._target_check_cache: tuple[str, bool, str] | None = None
 
     @property
     def running(self) -> bool:
@@ -177,6 +178,21 @@ class ChannelBridge:
         final = "\n\n".join(parts) if parts else ""
         return original, cleaned, rewritten, final
 
+    async def _check_target_channel(self, client: TelegramClient) -> tuple[bool, str]:
+        target = (self.settings.target_channel or "").strip()
+        if not target:
+            return False, "未配置目标频道"
+        if self._target_check_cache and self._target_check_cache[0] == target:
+            return self._target_check_cache[1], self._target_check_cache[2]
+        try:
+            await client.get_entity(target)
+            self._target_check_cache = (target, True, "")
+            return True, ""
+        except Exception as e:
+            reason = f"目标频道无效: {target} ({e})"
+            self._target_check_cache = (target, False, reason)
+            return False, reason
+
     async def _send_from_paths(
         self, client: TelegramClient, image_paths: list[str], caption: str
     ) -> None:
@@ -252,6 +268,12 @@ class ChannelBridge:
                 self._emit("INFO", f"待发布: {post_id}")
                 return
 
+            ok_target, target_reason = await self._check_target_channel(client)
+            if not ok_target:
+                store_update(post_id, status="pending", error=target_reason)
+                self._emit("ERROR", target_reason)
+                return
+
             await self._send_bundle(client, bundle, final)
             store_update(
                 post_id,
@@ -265,9 +287,14 @@ class ChannelBridge:
             self._emit("ERROR", "目标频道无发消息权限")
             await self._notify("❌ 发布失败：目标频道无发消息权限")
         except Exception as e:
-            store_update(post_id, status="failed", error=str(e))
-            self._emit("ERROR", f"处理失败: {e}")
-            await self._notify(f"❌ 处理失败: {e}")
+            msg = str(e)
+            if "ResolveUsernameRequest" in msg or "username is unacceptable" in msg:
+                store_update(post_id, status="pending", error=f"目标频道无效: {msg}")
+                self._emit("ERROR", f"目标频道无效，已转待发布: {msg}")
+                return
+            store_update(post_id, status="failed", error=msg)
+            self._emit("ERROR", f"处理失败: {msg}")
+            await self._notify(f"❌ 处理失败: {msg}")
 
     async def publish_posts(self, post_ids: list[str]) -> dict:
         self.reload_settings()

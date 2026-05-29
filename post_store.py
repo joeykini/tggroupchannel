@@ -187,6 +187,29 @@ def delete_posts(post_ids: list[str]) -> int:
         return cur.rowcount
 
 
+def delete_posts_and_media(post_ids: list[str], media_dir: Path) -> dict[str, int]:
+    if not post_ids:
+        return {"removed": 0, "media_deleted": 0}
+    q = ",".join("?" for _ in post_ids)
+    with _lock, _connect() as conn:
+        rows = conn.execute(
+            f"SELECT image_paths FROM posts WHERE id IN ({q})",
+            post_ids,
+        ).fetchall()
+        media_deleted = 0
+        for row in rows:
+            paths = json.loads(row["image_paths"] or "[]")
+            for p in paths:
+                name = Path(str(p).replace("/media/", "")).name
+                fp = media_dir / name
+                if fp.exists():
+                    fp.unlink(missing_ok=True)
+                    media_deleted += 1
+        cur = conn.execute(f"DELETE FROM posts WHERE id IN ({q})", post_ids)
+        conn.commit()
+        return {"removed": cur.rowcount, "media_deleted": media_deleted}
+
+
 def list_pending_ids(limit: int = 100) -> list[str]:
     with _lock, _connect() as conn:
         rows = conn.execute(

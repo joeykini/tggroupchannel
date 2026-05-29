@@ -96,8 +96,6 @@ class Settings:
             errors.append("缺少 API_HASH")
         if not self.source_channels:
             errors.append("请配置至少一个源频道 SOURCE_CHANNELS")
-        if self.auto_publish and not self.target_channel:
-            errors.append("开启自动发布时必须配置目标频道 TARGET_CHANNEL")
         if self.ai_enabled and not self.openai_api_key:
             errors.append("已开启 AI 复写，请填写 OPENAI_API_KEY")
         if self.bot_enabled and (not self.bot_token or not self.bot_chat_id):
