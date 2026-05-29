@@ -62,6 +62,13 @@
     .lightbox { position: fixed; inset: 0; background: rgba(0,0,0,.82); display: none; align-items: center; justify-content: center; z-index: 9999; padding: 24px; }
     .lightbox.open { display: flex; }
     .lightbox img { max-width: min(1200px, 94vw); max-height: 90vh; border-radius: 8px; object-fit: contain; background: #000; }
+    .mobile-toggle { display: none; }
+    @media (max-width: 960px) {
+      .grid { position: static; order: 2; }
+      .panel-wide { order: 1; min-height: auto; }
+      .mobile-toggle { display: inline-flex; }
+      .grid.collapsed { display: none; }
+    }
   </style>
 </head>
 <body>
@@ -71,11 +78,14 @@
       <h1>Telegram 抓取发布控制台</h1>
       <p class="sub">源频道抓取 → 瀑布流待发布池 → AI 改写与去源站 → 批量发布到目标频道</p>
     </div>
-    <div style="color:var(--muted);font-size:0.8rem">建议流程：保存配置 → 登录 → 开始监听/立即抓取一次</div>
+    <div class="row" style="margin-top:0">
+      <button class="ghost tiny mobile-toggle" id="btnTogglePanel">显示/隐藏配置面板</button>
+      <div style="color:var(--muted);font-size:0.8rem">建议流程：保存配置 → 登录 → 开始监听/立即抓取一次</div>
+    </div>
   </div>
 
   <div class="layout">
-  <div class="grid">
+  <div class="grid" id="controlPanel">
     <section>
       <h2>状态</h2>
       <span id="loginBadge" class="badge no">未登录</span>
@@ -516,6 +526,9 @@
         else selectedPostIds.add(p.id);
       });
       refreshPosts();
+    };
+    $("btnTogglePanel").onclick = () => {
+      $("controlPanel").classList.toggle("collapsed");
     };
     $("lightbox").onclick = (e) => {
       if (e.target.id === "lightbox" || e.target.id === "lightboxImg") {
