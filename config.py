@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -31,6 +32,9 @@ DEFAULT_BLOCKED_KEYWORDS = [
     "推广",
     "博彩",
     "招商",
+    "中奖",
+    "口令红包",
+    "工兵券",
 ]
 
 
@@ -39,7 +43,7 @@ def _split_list(raw: str | list[str] | None) -> list[str]:
         return []
     if isinstance(raw, list):
         return [str(x).strip() for x in raw if str(x).strip()]
-    return [p.strip() for p in str(raw).split(",") if p.strip()]
+    return [p.strip() for p in re.split(r"[,;；\n]+", str(raw)) if p.strip()]
 
 
 def _bool(val: str | bool | None, default: bool = True) -> bool:
@@ -94,7 +98,6 @@ class Settings:
     openai_model: str = "gpt-4o-mini"
     auto_publish: bool = True
     require_media: bool = False
-    telegram_proxy: str = ""
     # 每日定时抓取（用于服务器守护进程场景）
     daily_fetch_enabled: bool = False
     daily_fetch_time: str = "03:00"
@@ -161,7 +164,6 @@ class Settings:
             openai_model=str(data.get("openai_model") or "gpt-4o-mini").strip(),
             auto_publish=_bool(data.get("auto_publish"), True),
             require_media=_bool(data.get("require_media"), False),
-            telegram_proxy=str(data.get("telegram_proxy") or "").strip(),
             daily_fetch_enabled=_bool(data.get("daily_fetch_enabled"), False),
             daily_fetch_time=str(data.get("daily_fetch_time") or "03:00").strip(),
             daily_fetch_limit=max(1, _int(data.get("daily_fetch_limit"), 30)),
@@ -195,7 +197,6 @@ def load_settings() -> Settings:
         "openai_model": os.getenv("OPENAI_MODEL"),
         "auto_publish": os.getenv("AUTO_PUBLISH"),
         "require_media": os.getenv("REQUIRE_MEDIA"),
-        "telegram_proxy": os.getenv("TELEGRAM_PROXY"),
         "daily_fetch_enabled": os.getenv("DAILY_FETCH_ENABLED"),
         "daily_fetch_time": os.getenv("DAILY_FETCH_TIME"),
         "daily_fetch_limit": os.getenv("DAILY_FETCH_LIMIT"),

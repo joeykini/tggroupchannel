@@ -5,6 +5,14 @@ from __future__ import annotations
 import re
 
 
+def _first_match(text: str, patterns: list[str]) -> str:
+    for pattern in patterns:
+        m = re.search(pattern, text, flags=re.IGNORECASE)
+        if m:
+            return (m.group(1) or "").strip()
+    return ""
+
+
 def _extract_line_value(text: str, labels: list[str]) -> str:
     for label in labels:
         pattern = rf"(?:^|\n)\s*{re.escape(label)}\s*[：:]\s*([^\n\r]+)"
@@ -71,6 +79,35 @@ def extract_profile_fields(text: str) -> dict[str, str]:
     fields["telegram"] = _extract_line_value(raw, ["电报", "tg", "telegram"])
     fields["channel"] = _extract_line_value(raw, ["频道", "频道链接"])
     fields["duplex"] = _extract_line_value(raw, ["双向", "机器人", "bot"])
+
+    # 容错：无显式标签时，从全文补抓。
+    if not fields["channel"]:
+        fields["channel"] = _first_match(
+            raw,
+            [
+                r"(https?://t\.me/[A-Za-z0-9_]+)",
+                r"(t\.me/[A-Za-z0-9_]+)",
+            ],
+        )
+    if not fields["duplex"]:
+        fields["duplex"] = _first_match(
+            raw,
+            [
+                r"(?:双向|机器人|bot)\s*[：:]\s*([^\n\r]+)",
+                r"(@[A-Za-z0-9_]*bot)\b",
+            ],
+        )
+    if not fields["telegram"]:
+        tg = _first_match(
+            raw,
+            [
+                r"(?:电报|tg|telegram|联系方式)\s*[：:]\s*([^\n\r]+)",
+                r"(@[A-Za-z0-9_]{5,})",
+            ],
+        )
+        if tg and fields["duplex"] and tg == fields["duplex"]:
+            tg = ""
+        fields["telegram"] = tg
     return fields
 
 

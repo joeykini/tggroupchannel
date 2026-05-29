@@ -93,5 +93,4 @@ nohup python web_app.py >> web.log 2>&1 &
 ## 服务器部署建议
 
 - 用 `systemd` 或 Docker 长驻 `web_app.py`。  
-- 国内服务器必须配置 `TELEGRAM_PROXY`。  
 - 建议通过 SSH 隧道访问网页端，不直接暴露公网。  

@@ -191,7 +191,9 @@ class ChannelBridge:
         else:
             rewritten = format_profile_caption(rewritten)
             if self.settings.template_extract_enabled and self.settings.publish_template.strip():
-                rewritten = render_publish_template(rewritten, self.settings.publish_template)
+                # 模板提取使用原文可避免“去源站”提前删除联系方式导致字段丢失。
+                extraction_source = format_profile_caption(original)
+                rewritten = render_publish_template(extraction_source, self.settings.publish_template)
 
         parts: list[str] = []
         if self.settings.forward_header:
@@ -403,7 +405,7 @@ class ChannelBridge:
             if not post:
                 skipped += 1
                 continue
-            base_text = post.text_cleaned or post.text_original or ""
+            base_text = post.text_original or post.text_cleaned or ""
             normalized = format_profile_caption(base_text)
             rendered = render_publish_template(normalized, template)
             parts: list[str] = []

@@ -137,8 +137,6 @@
       <input id="apiId" type="number" />
       <label>API_HASH</label>
       <input id="apiHash" />
-      <label>Telegram 代理（国内必填，例 socks5://127.0.0.1:7890）</label>
-      <input id="telegramProxy" placeholder="socks5://127.0.0.1:7890" />
       <label>源频道（逗号分隔，如 @a,@b）</label>
       <input id="sourceChannels" />
       <label>目标频道（可先留空，本地处理后发布前再填）</label>
@@ -149,7 +147,7 @@
       <label>关键词过滤（可选，逗号分隔）</label>
       <input id="filterKeywords" />
       <label>广告屏蔽词（逗号分隔，命中直接不抓取）</label>
-      <input id="blockedKeywords" placeholder="vpn,机场,广告,推广,博彩" />
+      <input id="blockedKeywords" placeholder="vpn,机场,梯子,翻墙,代理,节点,clash,v2ray,trojan,ssr,广告,推广,博彩,招商,中奖,口令红包,工兵券" />
       <label>转发页眉（可选）</label>
       <input id="forwardHeader" />
       <div class="check">
@@ -159,6 +157,16 @@
       <div class="check">
         <input type="checkbox" id="aiEnabled" />
         <label for="aiEnabled" style="margin:0">开启 AI 复写（仅改配文，保留评分/链接/数字）</label>
+      </div>
+      <div id="aiConfigBlock">
+        <label>OpenAI API Key（或兼容接口的 Key）</label>
+        <input id="openaiKey" type="password" />
+        <label>API Base URL</label>
+        <input id="openaiBase" value="https://api.openai.com/v1" />
+        <label>模型</label>
+        <input id="openaiModel" value="gpt-4o-mini" />
+        <label>AI 系统提示词</label>
+        <textarea id="aiPrompt"></textarea>
       </div>
       <div class="check">
         <input type="checkbox" id="templateExtractEnabled" />
@@ -190,14 +198,6 @@
         <input type="checkbox" id="fetchOnStart" />
         <label for="fetchOnStart" style="margin:0">启动监听时先补抓一轮</label>
       </div>
-      <label>OpenAI API Key（或兼容接口的 Key）</label>
-      <input id="openaiKey" type="password" />
-      <label>API Base URL</label>
-      <input id="openaiBase" value="https://api.openai.com/v1" />
-      <label>模型</label>
-      <input id="openaiModel" value="gpt-4o-mini" />
-      <label>AI 系统提示词</label>
-      <textarea id="aiPrompt"></textarea>
       <div class="check">
         <input type="checkbox" id="botEnabled" />
         <label for="botEnabled" style="margin:0">启用 Telegram Bot 推送</label>
@@ -262,6 +262,12 @@
       return [...selectedPostIds];
     }
 
+    function syncAiConfigVisibility() {
+      const wrap = $("aiConfigBlock");
+      if (!wrap) return;
+      wrap.style.display = $("aiEnabled").checked ? "block" : "none";
+    }
+
     async function refreshStatus() {
       const s = await api("/api/status");
       $("loginBadge").textContent = s.logged_in ? "已登录 Telegram" : "未登录";
@@ -274,7 +280,6 @@
       const c = await api("/api/config");
       $("apiId").value = c.api_id || "";
       $("apiHash").value = c.api_hash || "";
-      $("telegramProxy").value = c.telegram_proxy || "";
       $("sourceChannels").value = c.source_channels || "";
       $("targetChannel").value = c.target_channel || "";
       $("filterKeywords").value = c.filter_keywords || "";
@@ -296,6 +301,7 @@
       $("aiPrompt").value = c.ai_prompt || "";
       $("botEnabled").checked = !!c.bot_enabled;
       $("botChatId").value = c.bot_chat_id || "";
+      syncAiConfigVisibility();
     }
 
     async function saveConfig() {
@@ -304,7 +310,6 @@
         body: JSON.stringify({
           api_id: parseInt($("apiId").value, 10),
           api_hash: $("apiHash").value.trim(),
-          telegram_proxy: $("telegramProxy").value.trim(),
           source_channels: $("sourceChannels").value.trim(),
           target_channel: $("targetChannel").value.trim(),
           filter_keywords: $("filterKeywords").value.trim(),
@@ -334,6 +339,7 @@
     }
 
     $("btnSave").onclick = () => saveConfig().catch((e) => alert(e.message));
+    $("aiEnabled").onchange = () => syncAiConfigVisibility();
     $("btnSendCode").onclick = async () => {
       try {
         const r = await api("/api/login/send_code", {

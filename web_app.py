@@ -53,10 +53,7 @@ def _format_tg_error(exc: BaseException) -> str:
     if "phone code hash" in lower:
         return "验证码会话无效，请重新点击“发送验证码”。"
     if "Connection to Telegram failed" in msg or "Timeout" in msg:
-        return (
-            "无法连接 Telegram 服务器。请开启 VPN/代理并配置 TELEGRAM_PROXY，"
-            "例如 socks5://127.0.0.1:7890。"
-        )
+        return "无法连接 Telegram 服务器，请稍后重试并检查服务器网络。"
     return msg
 
 
@@ -96,7 +93,6 @@ class ConfigBody(BaseModel):
     openai_api_key: str | None = None
     openai_base_url: str | None = None
     openai_model: str | None = None
-    telegram_proxy: str | None = None
     daily_fetch_enabled: bool | None = None
     daily_fetch_time: str | None = None
     daily_fetch_limit: int | None = None
