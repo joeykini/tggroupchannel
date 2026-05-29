@@ -206,7 +206,7 @@ def delete_posts_and_media(post_ids: list[str], media_dir: Path) -> dict[str, in
     q = ",".join("?" for _ in post_ids)
     with _lock, _connect() as conn:
         rows = conn.execute(
-            f"SELECT image_paths FROM posts WHERE id IN ({q})",
+            f"SELECT image_paths, media_items FROM posts WHERE id IN ({q})",
             post_ids,
         ).fetchall()
         media_deleted = 0

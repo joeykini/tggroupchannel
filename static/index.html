@@ -59,6 +59,9 @@
     .toolbar { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:12px; }
     .tiny { padding: 6px 10px; font-size: 0.78rem; }
     .post-meta { padding: 8px 12px 0; color: var(--muted); font-size: 0.78rem; }
+    .lightbox { position: fixed; inset: 0; background: rgba(0,0,0,.82); display: none; align-items: center; justify-content: center; z-index: 9999; padding: 24px; }
+    .lightbox.open { display: flex; }
+    .lightbox img { max-width: min(1200px, 94vw); max-height: 90vh; border-radius: 8px; object-fit: contain; background: #000; }
   </style>
 </head>
 <body>
@@ -212,6 +215,7 @@
   </section>
   </div>
   </div>
+  <div id="lightbox" class="lightbox"><img id="lightboxImg" alt="" /></div>
 
   <script>
     const $ = (id) => document.getElementById(id);
@@ -423,6 +427,13 @@
       el.querySelectorAll(".post-card").forEach(card => {
         card.onclick = (e) => {
           if (e.target.closest(".tabs")) return;
+          const imageEl = e.target.closest(".album img");
+          if (imageEl) {
+            $("lightboxImg").src = imageEl.src;
+            $("lightbox").classList.add("open");
+            return;
+          }
+          if (e.target.closest(".album video")) return;
           const id = card.dataset.id;
           if (selectedPostIds.has(id)) selectedPostIds.delete(id);
           else selectedPostIds.add(id);
@@ -505,6 +516,12 @@
         else selectedPostIds.add(p.id);
       });
       refreshPosts();
+    };
+    $("lightbox").onclick = (e) => {
+      if (e.target.id === "lightbox" || e.target.id === "lightboxImg") {
+        $("lightbox").classList.remove("open");
+        $("lightboxImg").src = "";
+      }
     };
 
     loadConfig();
