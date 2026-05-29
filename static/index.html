@@ -248,6 +248,7 @@
 
     let statusFilter = "";
     const selectedPostIds = new Set();
+    let lastRenderSignature = "";
     function selectedIds() {
       return [...selectedPostIds];
     }
@@ -401,7 +402,7 @@
       const media = clipped.map(item => {
         const path = item.path || "";
         if (item.type === "video") {
-          return `<video src="${path}" preload="metadata" controls muted playsinline></video>`;
+          return `<video src="${path}" preload="none" controls muted playsinline></video>`;
         }
         return `<img src="${path}" alt="" loading="lazy" />`;
       }).join("");
@@ -478,7 +479,11 @@
         const { posts } = await api(query);
         lastPosts = posts || [];
         $("filterTip").textContent = statusFilter ? `当前筛选：${statusFilter}` : "当前筛选：全部";
-        renderWaterfall(posts);
+        const signature = `${statusFilter}::` + (posts || []).map(p => `${p.id}:${p.status}:${p.updated_at || ""}`).join("|");
+        if (signature !== lastRenderSignature) {
+          lastRenderSignature = signature;
+          renderWaterfall(posts);
+        }
       } catch (_) {}
     }
 
@@ -510,7 +515,7 @@
     };
     $("btnClearSelected").onclick = () => {
       selectedPostIds.clear();
-      refreshPosts();
+      renderWaterfall(lastPosts);
     };
     $("btnShowPending").onclick = () => { statusFilter = "pending"; refreshPosts(); };
     $("btnShowFailed").onclick = () => { statusFilter = "failed"; refreshPosts(); };
@@ -518,14 +523,14 @@
     $("btnShowAll").onclick = () => { statusFilter = ""; refreshPosts(); };
     $("btnSelectAllVisible").onclick = () => {
       lastPosts.forEach(p => selectedPostIds.add(p.id));
-      refreshPosts();
+      renderWaterfall(lastPosts);
     };
     $("btnInvertVisible").onclick = () => {
       lastPosts.forEach(p => {
         if (selectedPostIds.has(p.id)) selectedPostIds.delete(p.id);
         else selectedPostIds.add(p.id);
       });
-      refreshPosts();
+      renderWaterfall(lastPosts);
     };
     $("btnTogglePanel").onclick = () => {
       $("controlPanel").classList.toggle("collapsed");

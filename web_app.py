@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
+from fastapi import Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -161,6 +162,15 @@ app = FastAPI(title="Telegram 频道转发", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/media", StaticFiles(directory=MEDIA_DIR), name="media")
+
+
+@app.middleware("http")
+async def media_cache_headers(request: Request, call_next):
+    response = await call_next(request)
+    # 媒体文件名包含消息键，内容变更会生成新文件名，适合长缓存
+    if request.url.path.startswith("/media/") and response.status_code in (200, 206, 304):
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    return response
 
 
 @app.get("/")
