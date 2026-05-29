@@ -13,9 +13,43 @@ def _first_match(text: str, patterns: list[str]) -> str:
     return ""
 
 
+def _normalize_text_for_parse(text: str) -> str:
+    s = text or ""
+    # keycap emoji: 1️⃣ -> 1
+    s = s.replace("\ufe0f", "").replace("\u20e3", "")
+    # unify spaces/newlines for more stable regex behavior
+    s = s.replace("\r\n", "\n").replace("\r", "\n")
+    return s
+
+
+def _normalize_name(raw: str) -> str:
+    if not raw:
+        return ""
+    # 昵称里常见“（休息）/（暂停）”之类状态，输出模板只保留名称本体
+    cleaned = re.sub(r"[（(].*?[)）]", "", raw).strip()
+    return cleaned or raw.strip()
+
+
+def _extract_prices_from_price_line(raw: str) -> tuple[str, str]:
+    if not raw:
+        return "", ""
+    line = _extract_line_value(raw, ["价位", "价格"])
+    if not line:
+        return "", ""
+    # 95 4P 这类写法合并为 954P
+    compact = re.sub(r"(?<=\d)\s+(?=\d)", "", line)
+    nums = re.findall(r"(\d{2,5})\s*[Pp]?", compact)
+    if not nums:
+        return "", ""
+    if len(nums) == 1:
+        return nums[0], ""
+    return nums[0], nums[1]
+
+
 def _extract_line_value(text: str, labels: list[str]) -> str:
     for label in labels:
-        pattern = rf"(?:^|\n)\s*{re.escape(label)}\s*[：:]\s*([^\n\r]+)"
+        # 允许行首有 emoji/符号，例如：🌺昵称：小布
+        pattern = rf"{re.escape(label)}\s*[：:]\s*([^\n\r]+)"
         m = re.search(pattern, text, flags=re.IGNORECASE)
         if m:
             return m.group(1).strip()
@@ -23,7 +57,7 @@ def _extract_line_value(text: str, labels: list[str]) -> str:
 
 
 def extract_profile_fields(text: str) -> dict[str, str]:
-    raw = text or ""
+    raw = _normalize_text_for_parse(text)
     fields: dict[str, str] = {
         "review_count": "",
         "good_rate": "",
@@ -67,7 +101,7 @@ def extract_profile_fields(text: str) -> dict[str, str]:
         if mm:
             fields[key] = mm.group(1).strip()
 
-    fields["name"] = _extract_line_value(raw, ["名字", "姓名", "昵称"])
+    fields["name"] = _normalize_name(_extract_line_value(raw, ["名字", "姓名", "昵称", "呢称"]))
     fields["age"] = _extract_line_value(raw, ["年龄", "岁"])
     fields["height"] = _extract_line_value(raw, ["身高"])
     fields["weight"] = _extract_line_value(raw, ["体重"])
@@ -75,10 +109,15 @@ def extract_profile_fields(text: str) -> dict[str, str]:
     fields["project"] = _extract_line_value(raw, ["项目", "项目分"])
     fields["price_once"] = _extract_line_value(raw, ["一次价格", "单次价格", "一次"])
     fields["price_twice"] = _extract_line_value(raw, ["两次价格", "双次价格", "两次"])
-    fields["region"] = _extract_line_value(raw, ["地区", "区域", "位置"])
+    fields["region"] = _extract_line_value(raw, ["地区", "区域", "位置", "定位"])
     fields["telegram"] = _extract_line_value(raw, ["电报", "tg", "telegram"])
     fields["channel"] = _extract_line_value(raw, ["频道", "频道链接"])
     fields["duplex"] = _extract_line_value(raw, ["双向", "机器人", "bot"])
+
+    if not fields["price_once"] and not fields["price_twice"]:
+        once, twice = _extract_prices_from_price_line(raw)
+        fields["price_once"] = once
+        fields["price_twice"] = twice
 
     # 容错：无显式标签时，从全文补抓。
     if not fields["channel"]:
