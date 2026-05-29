@@ -214,6 +214,23 @@ class ChannelBridge:
             self._target_check_cache = (target, False, reason)
             return False, reason
 
+    async def validate_target_channel(self) -> dict:
+        """供网页按钮手动测试目标频道可用性。"""
+        self.reload_settings()
+        if not self.settings.target_channel:
+            return {"ok": False, "reason": "未配置目标频道"}
+        errs = self.settings.validate_for_capture()
+        if errs:
+            return {"ok": False, "reason": "; ".join(errs)}
+        client = await self._get_send_client()
+        own_temp_client = client is not self._client
+        try:
+            ok, reason = await self._check_target_channel(client)
+            return {"ok": ok, "reason": reason}
+        finally:
+            if own_temp_client and client.is_connected():
+                await client.disconnect()
+
     async def _send_from_paths(
         self, client: TelegramClient, media_items: list[dict[str, str]], caption: str
     ) -> None:

@@ -312,6 +312,14 @@ async def api_validate_db() -> dict:
     return {"ok": True, **result}
 
 
+@app.post("/api/target/validate")
+async def api_validate_target() -> dict:
+    try:
+        return await _bridge.validate_target_channel()
+    except Exception as e:
+        raise HTTPException(400, str(e)) from e
+
+
 if __name__ == "__main__":
     import uvicorn
 

@@ -122,6 +122,9 @@
       <input id="sourceChannels" />
       <label>目标频道（可先留空，本地处理后发布前再填）</label>
       <input id="targetChannel" placeholder="@my_channel 或 -100..." />
+      <div class="row">
+        <button class="ghost tiny" id="btnValidateTarget">测试目标频道可用性</button>
+      </div>
       <label>关键词过滤（可选，逗号分隔）</label>
       <input id="filterKeywords" />
       <label>广告屏蔽词（逗号分隔，命中直接不抓取）</label>
@@ -199,6 +202,8 @@
       <button class="ghost tiny" id="btnSelectAllVisible">全选当前列表</button>
       <button class="ghost tiny" id="btnInvertVisible">反选当前列表</button>
       <button class="ghost tiny" id="btnShowPending">仅看待发布</button>
+      <button class="ghost tiny" id="btnShowFailed">仅看失败</button>
+      <button class="ghost tiny" id="btnShowBlocked">仅看已过滤</button>
       <button class="ghost tiny" id="btnShowAll">查看全部</button>
       <button class="ghost tiny" id="btnClearSelected">清空选择</button>
     </div>
@@ -359,6 +364,13 @@
         refreshPosts();
       } catch (e) { alert(e.message); }
     };
+    $("btnValidateTarget").onclick = async () => {
+      try {
+        const r = await api("/api/target/validate", { method: "POST" });
+        if (r.ok) alert("目标频道可用，可以发布");
+        else alert("目标频道不可用：" + (r.reason || "未知错误"));
+      } catch (e) { alert(e.message); }
+    };
 
     function escapeHtml(s) {
       return (s || "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
@@ -480,6 +492,8 @@
       refreshPosts();
     };
     $("btnShowPending").onclick = () => { statusFilter = "pending"; refreshPosts(); };
+    $("btnShowFailed").onclick = () => { statusFilter = "failed"; refreshPosts(); };
+    $("btnShowBlocked").onclick = () => { statusFilter = "blocked"; refreshPosts(); };
     $("btnShowAll").onclick = () => { statusFilter = ""; refreshPosts(); };
     $("btnSelectAllVisible").onclick = () => {
       lastPosts.forEach(p => selectedPostIds.add(p.id));
