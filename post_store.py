@@ -130,7 +130,7 @@ def add_or_ignore(post: StoredPost) -> bool:
                 media_items,
                 text_original, text_cleaned, text_formatted, text_final,
                 media_count, status, error, blocked_reason, created_at, updated_at, published_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 post.id,
