@@ -71,6 +71,24 @@ class Settings:
     strip_source_refs: bool = True
     ai_enabled: bool = False
     ai_prompt: str = ""
+    template_extract_enabled: bool = False
+    publish_template: str = (
+        "📊 {review_count}条车评，综合评分\n"
+        "好评 {good_rate}    |人照 {photo_score}    |服务 {service_score}\n"
+        "中评 {mid_rate}    |颜值 {face_score}    |态度 {attitude_score}\n"
+        "差评 {bad_rate}    |身材 {body_score}    |环境 {env_score}\n\n"
+        "名字:{name}\n"
+        "年龄:{age}\n"
+        "体重:{weight}\n"
+        "罩杯:{cup}\n"
+        "项目:{project}\n"
+        "一次价格:{price_once}\n"
+        "两次价格:{price_twice}\n"
+        "地区:{region}\n"
+        "电报:{telegram}\n"
+        "频道:{channel}\n"
+        "双向:{duplex}"
+    )
     openai_api_key: str = ""
     openai_base_url: str = "https://api.openai.com/v1"
     openai_model: str = "gpt-4o-mini"
@@ -136,6 +154,8 @@ class Settings:
             strip_source_refs=_bool(data.get("strip_source_refs"), True),
             ai_enabled=_bool(data.get("ai_enabled"), False),
             ai_prompt=str(data.get("ai_prompt") or ""),
+            template_extract_enabled=_bool(data.get("template_extract_enabled"), False),
+            publish_template=str(data.get("publish_template") or cls.publish_template),
             openai_api_key=str(data.get("openai_api_key") or "").strip(),
             openai_base_url=str(data.get("openai_base_url") or "https://api.openai.com/v1").rstrip("/"),
             openai_model=str(data.get("openai_model") or "gpt-4o-mini").strip(),
@@ -168,6 +188,8 @@ def load_settings() -> Settings:
         "strip_source_refs": os.getenv("STRIP_SOURCE_REFS"),
         "ai_enabled": os.getenv("AI_ENABLED"),
         "ai_prompt": os.getenv("AI_PROMPT"),
+        "template_extract_enabled": os.getenv("TEMPLATE_EXTRACT_ENABLED"),
+        "publish_template": os.getenv("PUBLISH_TEMPLATE"),
         "openai_api_key": os.getenv("OPENAI_API_KEY"),
         "openai_base_url": os.getenv("OPENAI_BASE_URL"),
         "openai_model": os.getenv("OPENAI_MODEL"),

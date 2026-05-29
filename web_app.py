@@ -91,6 +91,8 @@ class ConfigBody(BaseModel):
     strip_source_refs: bool | None = None
     ai_enabled: bool | None = None
     ai_prompt: str | None = None
+    template_extract_enabled: bool | None = None
+    publish_template: str | None = None
     openai_api_key: str | None = None
     openai_base_url: str | None = None
     openai_model: str | None = None
@@ -176,6 +178,11 @@ async def media_cache_headers(request: Request, call_next):
 @app.get("/")
 async def index() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html")
+
+
+@app.get("/fetch")
+async def fetch_page() -> FileResponse:
+    return FileResponse(STATIC_DIR / "fetch.html")
 
 
 @app.get("/api/status")
@@ -284,6 +291,7 @@ async def bridge_stop() -> dict:
 
 @app.post("/api/fetch/once")
 async def fetch_once(body: FetchBody) -> dict:
+    before = list(_log_buffer)
     try:
         task = asyncio.create_task(
             _bridge.fetch_recent_once(
@@ -291,7 +299,15 @@ async def fetch_once(body: FetchBody) -> dict:
                 since_hours=max(0, body.since_hours),
             )
         )
-        return await asyncio.shield(task)
+        result = await asyncio.shield(task)
+        after = list(_log_buffer)
+        new_logs = after[len(before) :] if len(after) >= len(before) else after
+        return {
+            "ok": True,
+            **result,
+            "debug_logs": new_logs,
+            "has_error": any((x.get("level") or "").upper() == "ERROR" for x in new_logs),
+        }
     except asyncio.CancelledError as e:
         raise HTTPException(503, "抓取任务被中断，请稍后重试") from e
     except Exception as e:

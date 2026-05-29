@@ -26,6 +26,7 @@ from post_store import (
     list_pending_ids,
     update as store_update,
 )
+from template_extract import render_publish_template
 from text_format import format_profile_caption, normalize_caption
 from tg_client import create_client, session_path
 
@@ -189,6 +190,8 @@ class ChannelBridge:
             rewritten = await rewrite_text(rewritten, self.settings)
         else:
             rewritten = format_profile_caption(rewritten)
+            if self.settings.template_extract_enabled and self.settings.publish_template.strip():
+                rewritten = render_publish_template(rewritten, self.settings.publish_template)
 
         parts: list[str] = []
         if self.settings.forward_header:

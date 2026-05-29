@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>抓取任务管理</title>
+  <style>
+    :root { --bg:#0f1419; --card:#1a2332; --text:#e7ecf3; --muted:#8b9cb3; --accent:#2aabee; --ok:#3dd68c; --err:#f07178; --line:#2d3a4d; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family:system-ui, sans-serif; background:var(--bg); color:var(--text); }
+    .page { max-width: 980px; margin: 0 auto; padding: 18px; }
+    .nav { display:flex; justify-content:space-between; align-items:center; margin-bottom:14px; }
+    .link { color:var(--accent); text-decoration:none; font-size:.9rem; }
+    section { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px; margin-bottom:14px; }
+    h1 { margin:0; font-size:1.1rem; }
+    h2 { margin:0 0 10px; color:var(--accent); font-size:.95rem; }
+    .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+    input { width: 180px; padding:9px 10px; border-radius:8px; border:1px solid var(--line); background:#0d1117; color:var(--text); }
+    button { padding:10px 16px; border:none; border-radius:8px; background:var(--accent); color:#fff; font-weight:600; cursor:pointer; }
+    .ghost { background:#2d3a4d; }
+    .muted { color:var(--muted); font-size:.85rem; margin-top:8px; }
+    .kpi { display:flex; gap:10px; flex-wrap:wrap; margin-top:10px; }
+    .badge { padding:4px 10px; border-radius:999px; font-size:.8rem; }
+    .ok { background:#1a3d2e; color:var(--ok); }
+    .err { background:#3d1a1a; color:var(--err); }
+    .debug { background:#0d1117; border:1px dashed var(--line); border-radius:8px; padding:10px; font-family:ui-monospace, monospace; font-size:.8rem; max-height:320px; overflow:auto; display:none; }
+    .debug .ERROR { color:var(--err); }
+    .debug .INFO { color:#9fc0de; }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <div class="nav">
+      <h1>立即抓取管理</h1>
+      <a class="link" href="/">返回主面板</a>
+    </div>
+
+    <section>
+      <h2>抓取参数</h2>
+      <div class="row">
+        <input id="limit" type="number" value="50" />
+        <input id="hours" type="number" value="24" />
+        <button id="run">执行抓取</button>
+        <button id="refresh" class="ghost">刷新状态</button>
+      </div>
+      <p class="muted">两个输入分别是：每频道抓取条数、抓取最近小时数（0=不限）。</p>
+      <div class="kpi">
+        <span id="pending" class="badge ok">待发布 0</span>
+        <span id="last" class="badge ok">最近结果：未执行</span>
+      </div>
+    </section>
+
+    <section>
+      <h2>调试输出</h2>
+      <p class="muted">执行抓取时显示调试过程；如果抓取正常，调试区域会自动隐藏；有错误时会保留。</p>
+      <div id="debug" class="debug"></div>
+    </section>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    let hideTimer = null;
+
+    async function api(path, opts = {}) {
+      const r = await fetch(path, {
+        headers: { "Content-Type": "application/json" },
+        ...opts,
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.detail || r.statusText);
+      return data;
+    }
+
+    function showDebug(lines) {
+      const box = $("debug");
+      box.style.display = "block";
+      box.innerHTML = (lines || []).map((l) => `<div class="${l.level || ''}">[${l.level || 'INFO'}] ${l.message || ''}</div>`).join("");
+    }
+
+    function hideDebugSoon() {
+      if (hideTimer) clearTimeout(hideTimer);
+      hideTimer = setTimeout(() => {
+        $("debug").style.display = "none";
+        $("debug").innerHTML = "";
+      }, 2500);
+    }
+
+    async function refreshStatus() {
+      const s = await api("/api/status");
+      $("pending").textContent = `待发布 ${s.pending_count || 0}`;
+    }
+
+    $("run").onclick = async () => {
+      try {
+        showDebug([{ level: "INFO", message: "抓取任务启动..." }]);
+        const result = await api("/api/fetch/once", {
+          method: "POST",
+          body: JSON.stringify({
+            limit: parseInt($("limit").value, 10) || 50,
+            since_hours: parseInt($("hours").value, 10) || 0,
+          }),
+        });
+        showDebug(result.debug_logs || []);
+        $("last").textContent = `最近结果：处理 ${result.handled || 0} 条`;
+        $("last").className = "badge ok";
+        await refreshStatus();
+        if (!result.has_error) hideDebugSoon();
+      } catch (e) {
+        showDebug([{ level: "ERROR", message: e.message }]);
+        $("last").textContent = "最近结果：执行失败";
+        $("last").className = "badge err";
+      }
+    };
+
+    $("refresh").onclick = () => refreshStatus().catch(() => {});
+
+    refreshStatus().catch(() => {});
+  </script>
+</body>
+</html>

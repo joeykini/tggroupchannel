@@ -89,7 +89,7 @@
     </div>
     <div class="row" style="margin-top:0">
       <button class="ghost tiny mobile-toggle" id="btnTogglePanel">显示/隐藏配置面板</button>
-      <div style="color:var(--muted);font-size:0.8rem">建议流程：保存配置 → 登录 → 开始监听/立即抓取一次</div>
+      <div style="color:var(--muted);font-size:0.8rem">建议流程：保存配置 → 登录 → 进入抓取管理页执行立即抓取</div>
     </div>
   </div>
 
@@ -98,21 +98,12 @@
     <section>
       <h2>状态</h2>
       <span id="loginBadge" class="badge no">未登录</span>
-      <span id="runBadge" class="badge no">未运行</span> <span id="pendingBadge" class="badge no">待发布 0</span>
+      <span id="pendingBadge" class="badge no">待发布 0</span>
       <div class="row">
-        <button class="primary" id="btnStart">开始监听</button>
-        <button class="danger" id="btnStop">停止</button>
-        <button class="ghost" onclick="refreshStatus()">刷新</button>
-      </div>
-      <div class="row">
-        <button class="ghost" id="btnFetchOnce">立即抓取一次</button>
+        <button class="primary" id="btnGoFetch">抓取管理页</button>
+        <button class="ghost" onclick="refreshStatus()">刷新状态</button>
         <button class="ghost" id="btnValidateDb">校验数据库/媒体</button>
       </div>
-      <div class="row">
-        <input id="fetchLimitNow" type="number" value="50" style="max-width:150px" />
-        <input id="fetchHoursNow" type="number" value="24" style="max-width:170px" />
-      </div>
-      <p style="color:var(--muted);font-size:.78rem;margin:8px 0 0">上面两个输入分别是：每频道抓取条数、抓取最近小时数（0=不限）</p>
     </section>
 
     <section>
@@ -162,6 +153,12 @@
         <label for="aiEnabled" style="margin:0">开启 AI 复写（仅改配文，保留评分/链接/数字）</label>
       </div>
       <div class="check">
+        <input type="checkbox" id="templateExtractEnabled" />
+        <label for="templateExtractEnabled" style="margin:0">关闭 AI 时按模板提取字段并重排</label>
+      </div>
+      <label>推送模板（可用变量：{name} {age} {price_once} {price_twice} {region} {telegram} {channel} {duplex} {raw}）</label>
+      <textarea id="publishTemplate"></textarea>
+      <div class="check">
         <input type="checkbox" id="autoPublish" checked />
         <label for="autoPublish" style="margin:0">自动发布到目标频道</label>
       </div>
@@ -206,10 +203,6 @@
       </div>
     </section>
 
-    <section>
-      <h2>日志</h2>
-      <div id="logs"></div>
-    </section>
   </div>
 
   <section class="panel-wide">
@@ -252,12 +245,6 @@
       return data;
     }
 
-    function renderLogs(logs) {
-      $("logs").innerHTML = (logs || []).slice(-80).map(
-        (l) => `<div class="${l.level}">[${l.level}] ${l.message}</div>`
-      ).join("") || "<div>暂无日志</div>";
-    }
-
     let statusFilter = "";
     const selectedPostIds = new Set();
     let lastRenderSignature = "";
@@ -269,11 +256,8 @@
       const s = await api("/api/status");
       $("loginBadge").textContent = s.logged_in ? "已登录 Telegram" : "未登录";
       $("loginBadge").className = "badge " + (s.logged_in ? "ok" : "no");
-      $("runBadge").textContent = s.bridge_running ? "监听运行中" : "未运行";
-      $("runBadge").className = "badge " + (s.bridge_running ? "ok" : "no");
       $("pendingBadge").textContent = `待发布 ${s.pending_count || 0}`;
       $("pendingBadge").className = "badge " + ((s.pending_count || 0) > 0 ? "ok" : "no");
-      renderLogs(s.logs);
     }
 
     async function loadConfig() {
@@ -288,6 +272,8 @@
       $("forwardHeader").value = c.forward_header || "";
       $("copyMode").checked = c.copy_without_forward_tag !== false;
       $("aiEnabled").checked = !!c.ai_enabled;
+      $("templateExtractEnabled").checked = !!c.template_extract_enabled;
+      $("publishTemplate").value = c.publish_template || "";
       $("autoPublish").checked = c.auto_publish !== false;
       $("requireMedia").checked = !!c.require_media;
       $("stripSourceRefs").checked = c.strip_source_refs !== false;
@@ -316,6 +302,8 @@
           forward_header: $("forwardHeader").value.trim(),
           copy_without_forward_tag: $("copyMode").checked,
           ai_enabled: $("aiEnabled").checked,
+          template_extract_enabled: $("templateExtractEnabled").checked,
+          publish_template: $("publishTemplate").value,
           auto_publish: $("autoPublish").checked,
           require_media: $("requireMedia").checked,
           strip_source_refs: $("stripSourceRefs").checked,
@@ -362,28 +350,7 @@
         refreshStatus();
       } catch (e) { alert(e.message); }
     };
-    $("btnStart").onclick = async () => {
-      try {
-        await api("/api/bridge/start", { method: "POST" });
-        refreshStatus();
-      } catch (e) { alert(e.message); }
-    };
-    $("btnStop").onclick = async () => {
-      await api("/api/bridge/stop", { method: "POST" });
-      refreshStatus();
-    };
-    $("btnFetchOnce").onclick = async () => {
-      try {
-        await api("/api/fetch/once", {
-          method: "POST",
-          body: JSON.stringify({
-            limit: parseInt($("fetchLimitNow").value, 10) || 50,
-            since_hours: parseInt($("fetchHoursNow").value, 10) || 0,
-          }),
-        });
-        refreshPosts();
-      } catch (e) { alert(e.message); }
-    };
+    $("btnGoFetch").onclick = () => { window.location.href = "/fetch"; };
     $("btnValidateDb").onclick = async () => {
       try {
         const r = await api("/api/maintenance/validate", { method: "POST" });
