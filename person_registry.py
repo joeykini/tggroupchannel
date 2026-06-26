@@ -41,7 +41,28 @@ REGION_ALIASES = {
     "涟水": "涟水县",
     "盱眙": "盱眙县",
     "金湖": "金湖县",
+    "经开区": "经济开发区",
+    "开发区": "经济开发区",
 }
+
+
+def is_allowed_region(raw: str, allowed_regions: list[str]) -> tuple[bool, str]:
+    """校验地区是否属于允许的本地区列表。"""
+    region = normalize_region(raw)
+    if not region:
+        return False, "缺少地区"
+    if not allowed_regions:
+        return True, ""
+    normalized = {normalize_region(r) for r in allowed_regions if (r or "").strip()}
+    if region in normalized:
+        return True, ""
+    for allowed in normalized:
+        base = re.sub(r"[区县市]$", "", allowed)
+        if not base:
+            continue
+        if region == base or region.startswith(base) or allowed.startswith(region.rstrip("区县市")):
+            return True, ""
+    return False, f"非本地区: {region}"
 
 
 def normalize_region(raw: str) -> str:

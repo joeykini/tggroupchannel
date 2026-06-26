@@ -224,6 +224,15 @@ def update_person(person_id: str, **kwargs: Any) -> None:
         conn.commit()
 
 
+def delete_person(person_id: str) -> bool:
+    if not person_id:
+        return False
+    with _lock, _connect() as conn:
+        cur = conn.execute("DELETE FROM persons WHERE person_id = ?", (person_id,))
+        conn.commit()
+        return cur.rowcount > 0
+
+
 def list_persons(status: str | None = None) -> list[PersonRecord]:
     sql = "SELECT * FROM persons"
     params: list[Any] = []

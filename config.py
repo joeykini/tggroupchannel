@@ -35,6 +35,17 @@ DEFAULT_BLOCKED_KEYWORDS = [
     "中奖",
     "口令红包",
     "工兵券",
+    "商k",
+]
+
+DEFAULT_ALLOWED_REGIONS = [
+    "清江浦区",
+    "淮阴区",
+    "淮安区",
+    "洪泽区",
+    "涟水县",
+    "盱眙县",
+    "金湖县",
 ]
 
 
@@ -95,6 +106,8 @@ class Settings:
     publish_interval_seconds: int = 30
     auto_publish_after_roster: bool = False
     nightly_job_enabled: bool = True
+    region_filter_enabled: bool = True
+    allowed_regions: list[str] = field(default_factory=lambda: list(DEFAULT_ALLOWED_REGIONS))
     delete_inactive_from_target: bool = True
     person_dedup_enabled: bool = True
     publish_template: str = (
@@ -158,6 +171,7 @@ class Settings:
         d["blocked_keywords"] = ",".join(self.blocked_keywords)
         d["bot_admin_ids"] = ",".join(self.bot_admin_ids)
         d["roster_bot_names"] = ",".join(self.roster_bot_names)
+        d["allowed_regions"] = ",".join(self.allowed_regions)
         return d
 
     @classmethod
@@ -203,6 +217,8 @@ class Settings:
             publish_interval_seconds=max(5, _int(data.get("publish_interval_seconds"), 30)),
             auto_publish_after_roster=_bool(data.get("auto_publish_after_roster"), False),
             nightly_job_enabled=_bool(data.get("nightly_job_enabled"), True),
+            region_filter_enabled=_bool(data.get("region_filter_enabled"), True),
+            allowed_regions=_split_list(data.get("allowed_regions")) or list(DEFAULT_ALLOWED_REGIONS),
             delete_inactive_from_target=_bool(data.get("delete_inactive_from_target"), True),
             person_dedup_enabled=_bool(data.get("person_dedup_enabled"), True),
             publish_template=str(data.get("publish_template") or cls.publish_template),
@@ -258,6 +274,8 @@ def load_settings() -> Settings:
         "publish_interval_seconds": os.getenv("PUBLISH_INTERVAL_SECONDS"),
         "auto_publish_after_roster": os.getenv("AUTO_PUBLISH_AFTER_ROSTER"),
         "nightly_job_enabled": os.getenv("NIGHTLY_JOB_ENABLED"),
+        "region_filter_enabled": os.getenv("REGION_FILTER_ENABLED"),
+        "allowed_regions": os.getenv("ALLOWED_REGIONS"),
         "delete_inactive_from_target": os.getenv("DELETE_INACTIVE_FROM_TARGET"),
         "person_dedup_enabled": os.getenv("PERSON_DEDUP_ENABLED"),
         "publish_template": os.getenv("PUBLISH_TEMPLATE"),
@@ -302,7 +320,7 @@ def patch_settings(**changes: str | bool | int | list[str]) -> Settings:
     """合并修改并写入 settings.json。"""
     current = load_settings().to_dict()
     for key, value in changes.items():
-        if key in ("source_channels", "filter_keywords", "blocked_keywords", "bot_admin_ids", "roster_bot_names"):
+        if key in ("source_channels", "filter_keywords", "blocked_keywords", "bot_admin_ids", "roster_bot_names", "allowed_regions"):
             if isinstance(value, list):
                 current[key] = ",".join(value)
             else:

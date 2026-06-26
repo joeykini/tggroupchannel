@@ -10,6 +10,7 @@ from telethon import TelegramClient
 from telethon.tl.types import User
 
 from config import ROOT, Settings
+from content_validate import validate_person_content
 from person_registry import (
     count_filled_fields,
     fields_from_text,
@@ -19,6 +20,7 @@ from person_registry import (
 )
 from roster_store import (
     PersonRecord,
+    delete_person,
     get_latest_active_person_ids,
     get_person,
     list_persons,
@@ -183,6 +185,54 @@ class RosterSync:
             store_update(person.canonical_post_id, status="inactive", error="不在出勤名单", target_message_ids=[])
         return deleted
 
+    async def remove_blocked_person(
+        self,
+        client: TelegramClient | None,
+        person_id: str,
+        reason: str,
+        person: PersonRecord | None = None,
+    ) -> int:
+        person = person or get_person(person_id)
+        deleted = 0
+        if client and person:
+            target_ids = await self._collect_target_ids_for_person(person_id)
+            if target_ids:
+                deleted = await self._delete_target_messages(client, target_ids)
+        delete_person(person_id)
+        mark_person_posts(person_id, "blocked", reason)
+        if person and person.canonical_post_id:
+            store_update(
+                person.canonical_post_id,
+                status="blocked",
+                error=reason,
+                target_message_ids=[],
+            )
+        self._emit("INFO", f"移出人员库 {person_id}: {reason}")
+        return deleted
+
+    async def purge_invalid_library(self, client: TelegramClient | None = None) -> dict[str, int]:
+        """清理人员库：广告词（含商k）或非淮安本地区。"""
+        stats = {"removed": 0, "blocked_keyword": 0, "invalid_region": 0, "target_deleted": 0}
+        for person in list(list_persons()):
+            fields = dict(person.merged_fields or {})
+            if person.name:
+                fields.setdefault("name", person.name)
+            if person.region:
+                fields.setdefault("region", person.region)
+            ok, reason = validate_person_content(person.preview_text, fields, self.settings)
+            if ok:
+                continue
+            deleted = await self.remove_blocked_person(client, person.person_id, reason, person)
+            stats["removed"] += 1
+            stats["target_deleted"] += deleted
+            if "非本地区" in reason:
+                stats["invalid_region"] += 1
+            else:
+                stats["blocked_keyword"] += 1
+        if stats["removed"]:
+            self._emit("INFO", f"人员库清理: {stats}")
+        return stats
+
     def _build_final_caption(self, fields: dict[str, str]) -> str:
         rendered = render_fields_template(self.settings.publish_template, fields)
         parts: list[str] = []
@@ -224,6 +274,14 @@ class RosterSync:
             elif person:
                 roster_status = person.roster_status
 
+        caption = self._build_final_caption(merged)
+        if not caption:
+            return False
+
+        ok, reason = validate_person_content(caption, merged, self.settings)
+        if not ok:
+            return False
+
         upsert_person(
             person_id,
             merged.get("name", ""),
@@ -231,10 +289,6 @@ class RosterSync:
             merged,
             roster_status=roster_status,
         )
-
-        caption = self._build_final_caption(merged)
-        if not caption:
-            return False
 
         old_ids = await self._collect_target_ids_for_person(person_id)
         if old_ids:
@@ -317,6 +371,10 @@ class RosterSync:
         if not caption:
             return False
 
+        ok, reason = validate_person_content(caption, merged, self.settings)
+        if not ok:
+            return False
+
         dup_ids = [p["id"] for p in posts_raw if p["id"] != canonical["id"]]
         if dup_ids:
             mark_posts_status(dup_ids, "duplicate", "同一人已合并入人员库")
@@ -347,7 +405,16 @@ class RosterSync:
             "removed": 0,
             "published": 0,
             "skipped_inactive": 0,
+            "purged": 0,
+            "purged_region": 0,
+            "purged_blocked": 0,
         }
+
+        purge_stats = await self.purge_invalid_library(client)
+        stats["purged"] = purge_stats["removed"]
+        stats["purged_region"] = purge_stats["invalid_region"]
+        stats["purged_blocked"] = purge_stats["blocked_keyword"]
+        stats["removed"] += purge_stats["target_deleted"]
 
         active_entries = await self.fetch_all_rosters(client)
         stats["roster_count"] = len(active_entries)
@@ -402,6 +469,11 @@ class RosterSync:
         if not person_id:
             return ""
         fields = fields_from_text(text)
+        ok, reason = validate_person_content(text, fields, self.settings)
+        if not ok:
+            store_update(post_id, status="blocked", error=reason, person_id=person_id)
+            self._emit("INFO", f"不入人员库 {post_id}: {reason}")
+            return ""
         store_update(post_id, person_id=person_id)
         await self.refresh_person_library(person_id)
         self._emit(
@@ -415,6 +487,9 @@ class RosterSync:
         if not pid:
             return ""
         fields = fields_from_text(text)
+        ok, reason = validate_person_content(text, fields, self.settings)
+        if not ok:
+            return ""
         upsert_person(pid, fields.get("name", ""), fields.get("region", ""), fields)
         return pid
 

@@ -64,6 +64,7 @@ BOOL_KEYS = {
     "daily": "daily_fetch_enabled",
     "nightly": "nightly_job_enabled",
     "pub_nightly": "auto_publish_after_roster",
+    "region": "region_filter_enabled",
 }
 
 SETTABLE_KEYS = {
@@ -78,6 +79,7 @@ SETTABLE_KEYS = {
     "fetch_time": ("daily_fetch_time", "每日补抓时间 HH:MM"),
     "roster_time": ("roster_sync_time", "凌晨任务时间 HH:MM"),
     "pub_interval": ("publish_interval_seconds", "批量发布间隔(秒)"),
+    "regions": ("allowed_regions", "允许地区(逗号分隔)"),
 }
 
 
@@ -186,6 +188,8 @@ class BotAdmin:
             f"@ {settings.roster_sync_time}\n"
             f"凌晨后自动发布: {self._on_off(settings.auto_publish_after_roster)}\n"
             f"批量发布间隔: {settings.publish_interval_seconds} 秒\n"
+            f"本地区限制: {self._on_off(settings.region_filter_enabled)} "
+            f"({', '.join(settings.allowed_regions[:4])}{'…' if len(settings.allowed_regions) > 4 else ''})\n"
             f"监听: {self._on_off(self.bridge.running)}"
         )
 
@@ -353,7 +357,8 @@ class BotAdmin:
             "del_target — 源删时同步删目标帖\n"
             "daily — 每日定时补抓\n"
             "nightly — 凌晨 02:30 比对任务\n"
-            "pub_nightly — 凌晨比对后自动间隔发布\n\n"
+            "pub_nightly — 凌晨比对后自动间隔发布\n"
+            "region — 仅允许淮安本地区入库\n\n"
             "示例: /toggle dedup"
         )
         p3 = "【配置 /set <项> <值>】\n"
@@ -364,12 +369,14 @@ class BotAdmin:
             "/set source @huaian008,@huaian0901\n"
             "/set target @huaianbendi\n"
             "/set blocked vpn,机场,广告\n"
-            "/set sync_interval 60"
+            "/set sync_interval 60\n"
+            "/set regions 清江浦区,淮阴区,淮安区,洪泽区,涟水县,盱眙县,金湖县"
         )
         p4 = (
             "【人员库】\n"
             "点名字 → 预览 → ✅ 发布到频道（单条）\n"
             "📢 发布全部未发 — 按 PUBLISH_INTERVAL_SECONDS 间隔批量发\n"
+            "含「商k」或非淮安本地区 → 不入库，出勤同步时自动清理\n"
             "🟢 在线 | 🔴 休息 | ✓ 已发布\n\n"
             "【控制台按钮】\n"
             "立即同步 — 对比源频道删帖/去重\n"
@@ -403,7 +410,7 @@ class BotAdmin:
             "publish_interval_seconds",
         ):
             value = max(5 if field == "publish_interval_seconds" else 1, int(value))
-        elif field in ("source_channels", "filter_keywords", "blocked_keywords"):
+        elif field in ("source_channels", "filter_keywords", "blocked_keywords", "allowed_regions"):
             value = [x.strip() for x in raw_value.replace("；", ",").split(",") if x.strip()]
         updated = patch_settings(**{field: value})
         self.bridge.reload_settings()

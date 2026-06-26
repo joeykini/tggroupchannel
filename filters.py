@@ -13,6 +13,7 @@ SOURCE_REF_PATTERNS = [
 MARKETING_PATTERNS = [
     re.compile(r"(vpn|机场|梯子|翻墙|节点|代理|clash|v2ray|trojan|ssr)", re.IGNORECASE),
     re.compile(r"(广告|推广|招商|合作|返利|博彩|菠菜|代发|引流)", re.IGNORECASE),
+    re.compile(r"商\s*[kK]", re.IGNORECASE),
 ]
 
 
