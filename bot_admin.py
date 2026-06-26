@@ -11,7 +11,12 @@ import httpx
 from bridge import ChannelBridge
 from config import Settings, load_settings, patch_settings
 
-from roster_store import count_library_persons, get_person, list_library_persons
+from roster_store import (
+    count_library_persons,
+    count_publishable_persons,
+    get_person,
+    list_library_persons,
+)
 
 log = logging.getLogger("bot-admin")
 LIB_PAGE_SIZE = 12
@@ -57,6 +62,8 @@ BOOL_KEYS = {
     "notify": "bot_enabled",
     "del_target": "delete_from_target_on_source_removed",
     "daily": "daily_fetch_enabled",
+    "nightly": "nightly_job_enabled",
+    "pub_nightly": "auto_publish_after_roster",
 }
 
 SETTABLE_KEYS = {
@@ -69,6 +76,8 @@ SETTABLE_KEYS = {
     "sync_limit": ("sync_scan_limit", "同步扫描条数"),
     "fetch_limit": ("daily_fetch_limit", "每日补抓条数"),
     "fetch_time": ("daily_fetch_time", "每日补抓时间 HH:MM"),
+    "roster_time": ("roster_sync_time", "凌晨任务时间 HH:MM"),
+    "pub_interval": ("publish_interval_seconds", "批量发布间隔(秒)"),
 }
 
 
@@ -78,6 +87,7 @@ class BotAdmin:
         self._offset = 0
         self._running = False
         self._http: httpx.AsyncClient | None = None
+        self._bulk_publish_lock = asyncio.Lock()
 
     @property
     def running(self) -> bool:
@@ -172,6 +182,10 @@ class BotAdmin:
             f"状态推送: {self._on_off(settings.bot_enabled)}\n"
             f"每日补抓: {self._on_off(settings.daily_fetch_enabled)} "
             f"@ {settings.daily_fetch_time} × {settings.daily_fetch_limit}\n"
+            f"凌晨任务: {self._on_off(settings.nightly_job_enabled)} "
+            f"@ {settings.roster_sync_time}\n"
+            f"凌晨后自动发布: {self._on_off(settings.auto_publish_after_roster)}\n"
+            f"批量发布间隔: {settings.publish_interval_seconds} 秒\n"
             f"监听: {self._on_off(self.bridge.running)}"
         )
 
@@ -244,8 +258,16 @@ class BotAdmin:
         if page < pages - 1:
             nav.append({"text": "下页 ▶", "callback_data": f"lib:p:{page + 1}"})
         rows.append(nav)
+        ready = count_publishable_persons(only_unpublished=True)
+        if ready > 0:
+            rows.append(
+                [{"text": f"📢 发布全部未发 ({ready})", "callback_data": "lib:puball:ask"}]
+            )
         rows.append([{"text": "返回菜单", "callback_data": "action:status"}])
-        text = f"📚 人员库（共 {total} 人）\n点击名字预览，预览页可发布。"
+        text = (
+            f"📚 人员库（共 {total} 人，未发 {ready} 人）\n"
+            "点名字 → 预览 → 单条发布；或点「发布全部未发」间隔批量发布。"
+        )
         return text, {"inline_keyboard": rows}
 
     def _person_preview_keyboard(self, person_id: str) -> dict:
@@ -261,6 +283,27 @@ class BotAdmin:
     async def _show_library(self, token: str, chat_id: int | str, page: int = 0) -> None:
         text, markup = self._library_list_keyboard(page)
         await self._send(token, chat_id, text, reply_markup=markup)
+
+    async def _run_bulk_publish(self, token: str, chat_id: int | str) -> None:
+        async with self._bulk_publish_lock:
+            try:
+                result = await self.bridge.publish_all_ready(only_unpublished=True)
+                if result.get("ok"):
+                    msg = (
+                        f"✅ 批量发布完成\n"
+                        f"成功 {result.get('published', 0)}，"
+                        f"失败 {result.get('failed', 0)}，"
+                        f"共 {result.get('total', 0)} 人\n"
+                        f"间隔 {result.get('interval_seconds', 0)} 秒"
+                    )
+                    if result.get("reason") == "无可发布人员":
+                        msg = "没有可发布人员（需在岗且有预览文案）。"
+                else:
+                    msg = f"❌ 批量发布失败: {result.get('reason') or '未知错误'}"
+                await self._send(token, chat_id, msg, reply_keyboard=MAIN_REPLY_KEYBOARD)
+            except Exception as e:
+                log.exception("批量发布失败")
+                await self._send(token, chat_id, f"❌ 批量发布异常: {e}")
 
     async def _show_person_preview(self, token: str, chat_id: int | str, person_id: str) -> None:
         person = get_person(person_id)
@@ -308,7 +351,9 @@ class BotAdmin:
             "media — 仅抓带图帖子\n"
             "notify — 状态 Bot 推送\n"
             "del_target — 源删时同步删目标帖\n"
-            "daily — 每日定时补抓\n\n"
+            "daily — 每日定时补抓\n"
+            "nightly — 凌晨 02:30 比对任务\n"
+            "pub_nightly — 凌晨比对后自动间隔发布\n\n"
             "示例: /toggle dedup"
         )
         p3 = "【配置 /set <项> <值>】\n"
@@ -322,10 +367,10 @@ class BotAdmin:
             "/set sync_interval 60"
         )
         p4 = (
-            "【人员库按钮说明】\n"
-            "🟢 — 在线可联系\n"
-            "🔴 — 休息（仍在岗）\n"
-            "✓ — 已发布到目标频道\n\n"
+            "【人员库】\n"
+            "点名字 → 预览 → ✅ 发布到频道（单条）\n"
+            "📢 发布全部未发 — 按 PUBLISH_INTERVAL_SECONDS 间隔批量发\n"
+            "🟢 在线 | 🔴 休息 | ✓ 已发布\n\n"
             "【控制台按钮】\n"
             "立即同步 — 对比源频道删帖/去重\n"
             "出勤同步 — 抓群出勤名单，刷新人员库\n"
@@ -351,8 +396,13 @@ class BotAdmin:
             raise ValueError(f"未知配置项: {key}")
         field, _ = SETTABLE_KEYS[key]
         value: str | int | list[str] = raw_value.strip()
-        if field in ("sync_interval_minutes", "sync_scan_limit", "daily_fetch_limit"):
-            value = max(1, int(value))
+        if field in (
+            "sync_interval_minutes",
+            "sync_scan_limit",
+            "daily_fetch_limit",
+            "publish_interval_seconds",
+        ):
+            value = max(5 if field == "publish_interval_seconds" else 1, int(value))
         elif field in ("source_channels", "filter_keywords", "blocked_keywords"):
             value = [x.strip() for x in raw_value.replace("；", ",").split(",") if x.strip()]
         updated = patch_settings(**{field: value})
@@ -507,6 +557,38 @@ class BotAdmin:
                         chat_id,
                         f"❌ 发布失败: {result.get('reason') or '未知错误'}",
                     )
+                return
+
+            if data == "lib:puball:ask":
+                ready = count_publishable_persons(only_unpublished=True)
+                s = load_settings()
+                if ready == 0:
+                    await self._answer_callback(token, callback_id, "没有可发布人员")
+                    return
+                await self._answer_callback(token, callback_id)
+                text = (
+                    f"确认发布全部未发？\n\n"
+                    f"共 {ready} 人，每条间隔 {s.publish_interval_seconds} 秒。\n"
+                    "过程可能较久，完成后会通知。"
+                )
+                markup = {
+                    "inline_keyboard": [
+                        [
+                            {"text": "✅ 确认发布", "callback_data": "lib:puball:yes"},
+                            {"text": "取消", "callback_data": "lib:p:0"},
+                        ]
+                    ]
+                }
+                await self._send(token, chat_id, text, reply_markup=markup)
+                return
+
+            if data == "lib:puball:yes":
+                if self._bulk_publish_lock.locked():
+                    await self._answer_callback(token, callback_id, "已有批量发布进行中")
+                    return
+                await self._answer_callback(token, callback_id, "开始批量发布…")
+                await self._send(token, chat_id, "📢 批量发布已开始，请稍候…")
+                asyncio.create_task(self._run_bulk_publish(token, chat_id))
                 return
 
             if data == "action:status":

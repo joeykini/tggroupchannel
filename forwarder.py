@@ -49,6 +49,7 @@ async def _sync_scheduler(bridge: ChannelBridge) -> None:
 
 
 async def _roster_scheduler(bridge: ChannelBridge) -> None:
+    """白天按间隔仅做出勤比对（不含批量发布）。"""
     while bridge.running:
         try:
             settings = load_settings()
@@ -60,6 +61,24 @@ async def _roster_scheduler(bridge: ChannelBridge) -> None:
         await asyncio.sleep(interval * 60)
 
 
+async def _nightly_scheduler(bridge: ChannelBridge) -> None:
+    """每天 roster_sync_time（默认 02:30）执行：补抓→源站同步→出勤比对→可选间隔发布。"""
+    last_run = ""
+    while bridge.running:
+        try:
+            settings = load_settings()
+            if settings.nightly_job_enabled and settings.roster_sync_daily_enabled:
+                now = datetime.now()
+                day_key = now.strftime("%Y-%m-%d")
+                if now.strftime("%H:%M") == settings.roster_sync_time and last_run != day_key:
+                    last_run = day_key
+                    log.info("触发凌晨任务 @ %s", settings.roster_sync_time)
+                    await bridge.run_nightly_job()
+        except Exception as e:
+            log.error("凌晨任务失败: %s", e)
+        await asyncio.sleep(30)
+
+
 async def cmd_run() -> None:
     bridge = ChannelBridge()
     admin = BotAdmin(bridge)
@@ -67,6 +86,7 @@ async def cmd_run() -> None:
     daily_task = asyncio.create_task(_daily_scheduler(bridge))
     sync_task = asyncio.create_task(_sync_scheduler(bridge))
     roster_task = asyncio.create_task(_roster_scheduler(bridge))
+    nightly_task = asyncio.create_task(_nightly_scheduler(bridge))
     admin_task = asyncio.create_task(admin.run_loop())
     try:
         while bridge.running:
@@ -77,6 +97,7 @@ async def cmd_run() -> None:
         daily_task.cancel()
         sync_task.cancel()
         roster_task.cancel()
+        nightly_task.cancel()
         admin_task.cancel()
         await admin.close()
         await bridge.stop()

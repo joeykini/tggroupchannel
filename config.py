@@ -90,6 +90,11 @@ class Settings:
     roster_bot_names: list[str] = field(default_factory=lambda: ["修车小助手"])
     roster_sync_enabled: bool = True
     roster_sync_interval_minutes: int = 120
+    roster_sync_daily_enabled: bool = True
+    roster_sync_time: str = "02:30"
+    publish_interval_seconds: int = 30
+    auto_publish_after_roster: bool = False
+    nightly_job_enabled: bool = True
     delete_inactive_from_target: bool = True
     person_dedup_enabled: bool = True
     publish_template: str = (
@@ -112,7 +117,7 @@ class Settings:
     openai_api_key: str = ""
     openai_base_url: str = "https://api.openai.com/v1"
     openai_model: str = "gpt-4o-mini"
-    auto_publish: bool = True
+    auto_publish: bool = False
     require_media: bool = False
     # 每日定时抓取（用于服务器守护进程场景）
     daily_fetch_enabled: bool = False
@@ -193,6 +198,11 @@ class Settings:
             roster_bot_names=_split_list(data.get("roster_bot_names", ["修车小助手"])),
             roster_sync_enabled=_bool(data.get("roster_sync_enabled"), True),
             roster_sync_interval_minutes=max(30, _int(data.get("roster_sync_interval_minutes"), 120)),
+            roster_sync_daily_enabled=_bool(data.get("roster_sync_daily_enabled"), True),
+            roster_sync_time=str(data.get("roster_sync_time") or "02:30").strip(),
+            publish_interval_seconds=max(5, _int(data.get("publish_interval_seconds"), 30)),
+            auto_publish_after_roster=_bool(data.get("auto_publish_after_roster"), False),
+            nightly_job_enabled=_bool(data.get("nightly_job_enabled"), True),
             delete_inactive_from_target=_bool(data.get("delete_inactive_from_target"), True),
             person_dedup_enabled=_bool(data.get("person_dedup_enabled"), True),
             publish_template=str(data.get("publish_template") or cls.publish_template),
@@ -243,6 +253,11 @@ def load_settings() -> Settings:
         "roster_bot_names": os.getenv("ROSTER_BOT_NAMES"),
         "roster_sync_enabled": os.getenv("ROSTER_SYNC_ENABLED"),
         "roster_sync_interval_minutes": os.getenv("ROSTER_SYNC_INTERVAL_MINUTES"),
+        "roster_sync_daily_enabled": os.getenv("ROSTER_SYNC_DAILY_ENABLED"),
+        "roster_sync_time": os.getenv("ROSTER_SYNC_TIME"),
+        "publish_interval_seconds": os.getenv("PUBLISH_INTERVAL_SECONDS"),
+        "auto_publish_after_roster": os.getenv("AUTO_PUBLISH_AFTER_ROSTER"),
+        "nightly_job_enabled": os.getenv("NIGHTLY_JOB_ENABLED"),
         "delete_inactive_from_target": os.getenv("DELETE_INACTIVE_FROM_TARGET"),
         "person_dedup_enabled": os.getenv("PERSON_DEDUP_ENABLED"),
         "publish_template": os.getenv("PUBLISH_TEMPLATE"),

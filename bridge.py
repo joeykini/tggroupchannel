@@ -329,6 +329,80 @@ class ChannelBridge:
             if own_temp_client and client.is_connected():
                 await client.disconnect()
 
+    async def publish_all_ready(
+        self,
+        only_unpublished: bool = True,
+        interval_seconds: int | None = None,
+    ) -> dict:
+        """批量发布人员库（可设每条间隔秒数）。"""
+        self.reload_settings()
+        errs = self.settings.validate_for_publish()
+        if errs:
+            return {"ok": False, "reason": "; ".join(errs), "published": 0, "failed": 0}
+
+        from roster_store import list_publishable_persons
+
+        persons = list_publishable_persons(only_unpublished=only_unpublished)
+        if not persons:
+            return {"ok": True, "published": 0, "failed": 0, "total": 0, "reason": "无可发布人员"}
+
+        interval = (
+            self.settings.publish_interval_seconds
+            if interval_seconds is None
+            else max(0, interval_seconds)
+        )
+        client = await self._get_send_client()
+        own_temp_client = client is not self._client
+        published = 0
+        failed = 0
+        try:
+            for i, person in enumerate(persons):
+                ok = await self._roster().publish_person(client, person.person_id)
+                if ok:
+                    published += 1
+                    self._emit(
+                        "INFO",
+                        f"批量发布 [{i + 1}/{len(persons)}] {person.name} · {person.region}",
+                    )
+                else:
+                    failed += 1
+                if interval > 0 and i < len(persons) - 1:
+                    await asyncio.sleep(interval)
+            await self._notify(
+                f"📢 批量发布完成\n成功 {published}，失败 {failed}，共 {len(persons)} 人"
+            )
+            return {
+                "ok": True,
+                "published": published,
+                "failed": failed,
+                "total": len(persons),
+                "interval_seconds": interval,
+            }
+        finally:
+            if own_temp_client and client.is_connected():
+                await client.disconnect()
+
+    async def run_nightly_job(self) -> dict:
+        """凌晨定时：补抓 → 源站同步 → 出勤比对 → 可选间隔发布。"""
+        self.reload_settings()
+        result: dict = {"fetch": None, "sync": None, "roster": None, "publish": None}
+        try:
+            if self.settings.daily_fetch_enabled:
+                result["fetch"] = await self.fetch_recent_once(
+                    limit_per_channel=self.settings.daily_fetch_limit
+                )
+            if self.settings.sync_enabled:
+                result["sync"] = await self.sync_with_source()
+            result["roster"] = await self.sync_roster()
+            if self.settings.auto_publish_after_roster:
+                result["publish"] = await self.publish_all_ready(only_unpublished=True)
+            self._emit("INFO", f"凌晨任务完成: {result}")
+            await self._notify(f"🌙 凌晨任务完成\n{result}")
+        except Exception as e:
+            self._emit("ERROR", f"凌晨任务失败: {e}")
+            result["error"] = str(e)
+        return result
+
     async def _process_bundle(self, client: TelegramClient, bundle: MessageBundle) -> None:
         post_id = bundle.post_key
         if exists(post_id):

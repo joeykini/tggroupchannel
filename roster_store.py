@@ -267,6 +267,41 @@ def count_library_persons(include_inactive: bool = False) -> int:
     return int(row["c"] or 0) if row else 0
 
 
+def list_publishable_persons(
+    only_unpublished: bool = True,
+    limit: int = 500,
+) -> list[PersonRecord]:
+    """可发布人员：在岗且有预览文案。"""
+    sql = """
+        SELECT * FROM persons
+        WHERE preview_text != ''
+          AND roster_status IN ('online', 'resting', 'unknown')
+    """
+    if only_unpublished:
+        sql += " AND library_status IN ('draft', 'ready')"
+    else:
+        sql += " AND library_status IN ('draft', 'ready', 'published')"
+    sql += " ORDER BY name ASC LIMIT ?"
+    with _lock, _connect() as conn:
+        rows = conn.execute(sql, (limit,)).fetchall()
+    return [_row_to_person(r) for r in rows]
+
+
+def count_publishable_persons(only_unpublished: bool = True) -> int:
+    sql = """
+        SELECT COUNT(*) AS c FROM persons
+        WHERE preview_text != ''
+          AND roster_status IN ('online', 'resting', 'unknown')
+    """
+    if only_unpublished:
+        sql += " AND library_status IN ('draft', 'ready')"
+    else:
+        sql += " AND library_status IN ('draft', 'ready', 'published')"
+    with _lock, _connect() as conn:
+        row = conn.execute(sql).fetchone()
+    return int(row["c"] or 0) if row else 0
+
+
 def list_posts_by_person(person_id: str) -> list[dict[str, Any]]:
     from post_store import _row_to_post
 
