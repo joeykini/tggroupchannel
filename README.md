@@ -5,14 +5,95 @@
 ## 快速开始（命令行）
 
 ```bash
-cd /Users/kinijoey/Desktop/telegrambot
-python3 -m venv .venv
+cd ~/tggroupchannel          # 或你的项目目录
+python3 -m venv .venv        # 注意是 .venv，不是 venv
 source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env   # 填写 API_ID、API_HASH、SOURCE_CHANNELS、TARGET_CHANNEL
+cp .env.example .env         # 填写 API_ID、API_HASH、SOURCE_CHANNELS、TARGET_CHANNEL
 python forwarder.py login
 python forwarder.py run
 ```
+
+## 服务器部署与后台运行
+
+项目在服务器上默认使用 **`.venv`**（带点），激活命令是：
+
+```bash
+source .venv/bin/activate    # 不是 venv/bin/activate
+```
+
+### 首次部署
+
+```bash
+cd ~/tggroupchannel
+git clone https://github.com/joeykini/tggroupchannel.git .   # 若尚未克隆
+
+# Debian/Ubuntu 若缺少 venv 模块
+apt update
+apt install -y python3-venv python3-pip git
+
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+
+cp .env.example .env
+nano .env                      # 填写 API_ID、API_HASH、频道、BOT 等
+
+python forwarder.py login      # 首次登录 Telegram
+```
+
+### 前台运行（调试）
+
+```bash
+cd ~/tggroupchannel
+source .venv/bin/activate
+python forwarder.py run
+```
+
+### 后台运行（推荐 nohup，无需 screen）
+
+```bash
+cd ~/tggroupchannel
+source .venv/bin/activate
+
+# 若已有旧进程，先停掉
+pkill -f "forwarder.py run" 2>/dev/null
+
+# 后台启动，日志写入 nohup.out
+nohup python forwarder.py run > nohup.out 2>&1 &
+
+# 查看是否在跑
+ps aux | grep forwarder
+
+# 实时看日志（Ctrl+C 只退出 tail，进程继续跑）
+tail -f nohup.out
+```
+
+### 停止 / 更新 / 重启
+
+```bash
+cd ~/tggroupchannel
+
+# 1. 停止
+pkill -f "forwarder.py run"
+
+# 2. 拉取最新代码
+git pull
+
+# 3. 激活环境（有依赖变更时再 pip install -r requirements.txt）
+source .venv/bin/activate
+
+# 4. （可选）立刻清理人员库：商k / 非淮安本地区
+python forwarder.py roster
+
+# 5. 重新后台启动
+nohup python forwarder.py run > nohup.out 2>&1 &
+tail -f nohup.out
+```
+
+### 可选：screen / systemd
+
+未安装 screen 时可直接 `apt install -y screen`，或用 `tmux`。长期常驻也可配置 `systemd` 服务（见文末说明）。
 
 ## 命令
 
@@ -36,7 +117,8 @@ python forwarder.py run
 - 🟢 在线 / 🔴 休息 **都在岗**（只要在出勤名单里就不删）
 - 同一人跨频道 **合并资料**，写入人员库（**不自动发布**）
 - 管理 Bot：**人员库** → 点名字预览 → 点发布
-- 广告/无模板内容 **不入库**
+- 广告/无模板/非淮安本地区 **不入库**（`REGION_FILTER_ENABLED`、`ALLOWED_REGIONS`）
+- 含「商k」等广告词 **不入库并自动清理**
 - **不在出勤名单** 且已发布过 → 可选删统一榜帖（`DELETE_INACTIVE_FROM_TARGET=true`）
 
 ```bash
@@ -76,7 +158,12 @@ python forwarder.py roster   # 手动：群内触发「出勤」→ 解析 → �
 | `SYNC_ENABLED` | 定时对比源频道删帖 |
 | `SYNC_INTERVAL_MINUTES` | 同步间隔（分钟） |
 | `DELETE_FROM_TARGET_ON_SOURCE_REMOVED` | 源删时同步删目标帖 |
-| `BLOCKED_KEYWORDS` | 广告屏蔽词 |
+| `BLOCKED_KEYWORDS` | 广告屏蔽词（含 `商k`） |
+| `REGION_FILTER_ENABLED` | 仅允许本地区入库（默认开） |
+| `ALLOWED_REGIONS` | 允许地区，逗号分隔（默认淮安 7 区县） |
+| `ROSTER_SYNC_TIME` | 凌晨任务时间（默认 `02:30`） |
+| `PUBLISH_INTERVAL_SECONDS` | 批量发布每条间隔（秒） |
+| `AUTO_PUBLISH_AFTER_ROSTER` | 凌晨比对后是否自动发布（默认关） |
 | `BOT_*` | 抓取/发布结果 TG Bot 推送 |
 | `BOT_ADMIN_IDS` | 允许在 Bot 内改配置的管理员用户 ID |
 
@@ -110,4 +197,33 @@ python forwarder.py roster   # 手动：群内触发「出勤」→ 解析 → �
 ## 安全
 
 - 勿泄露 `user.session` 和 `.env`
-- 建议在服务器用 `systemd` 常驻 `python forwarder.py run`
+- 服务器建议用 `nohup` 或 `systemd` 常驻 `python forwarder.py run`
+
+### systemd 示例（可选）
+
+```ini
+# /etc/systemd/system/tg-forwarder.service
+[Unit]
+Description=Telegram channel forwarder
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/tggroupchannel
+Environment=PATH=/root/tggroupchannel/.venv/bin
+ExecStart=/root/tggroupchannel/.venv/bin/python forwarder.py run
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+systemctl daemon-reload
+systemctl enable tg-forwarder
+systemctl start tg-forwarder
+systemctl status tg-forwarder
+journalctl -u tg-forwarder -f
+```
