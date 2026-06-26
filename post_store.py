@@ -29,7 +29,9 @@ class StoredPost:
     text_formatted: str = ""
     text_final: str = ""
     media_count: int = 0
-    status: str = "captured"  # captured | rewritten | pending | sent | failed | blocked
+    content_fingerprint: str = ""
+    target_message_ids: list[int] = field(default_factory=list)
+    status: str = "captured"  # captured | rewritten | pending | sent | failed | blocked | source_deleted | duplicate
     error: str = ""
     blocked_reason: str = ""
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
@@ -63,6 +65,8 @@ def init_db() -> None:
                 text_formatted TEXT NOT NULL DEFAULT '',
                 text_final TEXT NOT NULL DEFAULT '',
                 media_count INTEGER NOT NULL DEFAULT 0,
+                content_fingerprint TEXT NOT NULL DEFAULT '',
+                target_message_ids TEXT NOT NULL DEFAULT '[]',
                 status TEXT NOT NULL DEFAULT 'captured',
                 error TEXT NOT NULL DEFAULT '',
                 blocked_reason TEXT NOT NULL DEFAULT '',
@@ -81,6 +85,16 @@ def init_db() -> None:
         cols = [r["name"] for r in conn.execute("PRAGMA table_info(posts)").fetchall()]
         if "media_items" not in cols:
             conn.execute("ALTER TABLE posts ADD COLUMN media_items TEXT NOT NULL DEFAULT '[]'")
+        if "content_fingerprint" not in cols:
+            conn.execute("ALTER TABLE posts ADD COLUMN content_fingerprint TEXT NOT NULL DEFAULT ''")
+        if "target_message_ids" not in cols:
+            conn.execute("ALTER TABLE posts ADD COLUMN target_message_ids TEXT NOT NULL DEFAULT '[]'")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_posts_fingerprint ON posts(content_fingerprint)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_posts_chat_status ON posts(chat_id, status)"
+        )
         conn.commit()
 
 
@@ -102,6 +116,10 @@ def _row_to_post(row: sqlite3.Row) -> StoredPost:
         text_formatted=row["text_formatted"] or "",
         text_final=row["text_final"] or "",
         media_count=int(row["media_count"] or 0),
+        content_fingerprint=row["content_fingerprint"] if "content_fingerprint" in row.keys() else "",
+        target_message_ids=json.loads(
+            row["target_message_ids"] if "target_message_ids" in row.keys() else "[]"
+        ),
         status=row["status"] or "captured",
         error=row["error"] or "",
         blocked_reason=row["blocked_reason"] or "",
@@ -129,8 +147,9 @@ def add_or_ignore(post: StoredPost) -> bool:
                 id, source_key, chat_id, message_ids, image_paths,
                 media_items,
                 text_original, text_cleaned, text_formatted, text_final,
-                media_count, status, error, blocked_reason, created_at, updated_at, published_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                media_count, content_fingerprint, target_message_ids,
+                status, error, blocked_reason, created_at, updated_at, published_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 post.id,
@@ -144,6 +163,8 @@ def add_or_ignore(post: StoredPost) -> bool:
                 post.text_formatted,
                 post.text_final,
                 post.media_count,
+                post.content_fingerprint,
+                json.dumps(post.target_message_ids, ensure_ascii=False),
                 post.status,
                 post.error,
                 post.blocked_reason,
@@ -160,7 +181,7 @@ def update(post_id: str, **kwargs: Any) -> None:
     if not kwargs:
         return
     serializable = dict(kwargs)
-    for key in ("message_ids", "image_paths", "media_items"):
+    for key in ("message_ids", "image_paths", "media_items", "target_message_ids"):
         if key in serializable:
             serializable[key] = json.dumps(serializable[key], ensure_ascii=False)
     serializable["updated_at"] = datetime.now(timezone.utc).isoformat()
@@ -236,6 +257,62 @@ def list_pending_ids(limit: int = 100) -> list[str]:
     return [r["id"] for r in rows]
 
 
+def list_posts_by_chat(chat_id: int, statuses: list[str] | None = None) -> list[StoredPost]:
+    sql = "SELECT * FROM posts WHERE chat_id = ?"
+    params: list[Any] = [chat_id]
+    if statuses:
+        q = ",".join("?" for _ in statuses)
+        sql += f" AND status IN ({q})"
+        params.extend(statuses)
+    sql += " ORDER BY created_at DESC"
+    with _lock, _connect() as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return [_row_to_post(r) for r in rows]
+
+
+def find_by_fingerprint(fingerprint: str, exclude_id: str | None = None) -> StoredPost | None:
+    if not fingerprint:
+        return None
+    sql = (
+        "SELECT * FROM posts WHERE content_fingerprint = ? "
+        "AND status NOT IN ('blocked', 'duplicate', 'source_deleted')"
+    )
+    params: list[Any] = [fingerprint]
+    if exclude_id:
+        sql += " AND id != ?"
+        params.append(exclude_id)
+    sql += " ORDER BY created_at DESC LIMIT 1"
+    with _lock, _connect() as conn:
+        row = conn.execute(sql, params).fetchone()
+    return _row_to_post(row) if row else None
+
+
+def mark_posts_status(post_ids: list[str], status: str, error: str = "") -> int:
+    if not post_ids:
+        return 0
+    q = ",".join("?" for _ in post_ids)
+    now = datetime.now(timezone.utc).isoformat()
+    with _lock, _connect() as conn:
+        cur = conn.execute(
+            f"UPDATE posts SET status = ?, error = ?, updated_at = ? WHERE id IN ({q})",
+            [status, error, now, *post_ids],
+        )
+        conn.commit()
+        return cur.rowcount
+
+
+def list_active_source_keys(chat_id: int) -> set[str]:
+    with _lock, _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT source_key FROM posts
+            WHERE chat_id = ? AND status NOT IN ('blocked', 'duplicate', 'source_deleted')
+            """,
+            (chat_id,),
+        ).fetchall()
+    return {r["source_key"] for r in rows}
+
+
 def validate_and_cleanup(media_dir: Path) -> dict[str, int]:
     """
     校验并修复：
@@ -244,6 +321,7 @@ def validate_and_cleanup(media_dir: Path) -> dict[str, int]:
     - 删除磁盘中的孤儿媒体文件
     """
     dedup_removed = 0
+    fingerprint_dedup_removed = 0
     media_fixed = 0
     orphan_deleted = 0
 
@@ -267,6 +345,31 @@ def validate_and_cleanup(media_dir: Path) -> dict[str, int]:
             q = ",".join("?" for _ in remove_rowids)
             conn.execute(f"DELETE FROM posts WHERE rowid IN ({q})", remove_rowids)
             dedup_removed = len(remove_rowids)
+
+        fp_rows = conn.execute(
+            """
+            SELECT rowid, id, content_fingerprint, created_at FROM posts
+            WHERE content_fingerprint != ''
+              AND status NOT IN ('blocked', 'duplicate', 'source_deleted')
+            ORDER BY content_fingerprint, created_at DESC
+            """
+        ).fetchall()
+        seen_fp: set[str] = set()
+        fp_dup_rowids: list[int] = []
+        for row in fp_rows:
+            fp = row["content_fingerprint"]
+            if fp in seen_fp:
+                fp_dup_rowids.append(row["rowid"])
+            else:
+                seen_fp.add(fp)
+        if fp_dup_rowids:
+            now = datetime.now(timezone.utc).isoformat()
+            for rowid in fp_dup_rowids:
+                conn.execute(
+                    "UPDATE posts SET status = 'duplicate', error = '内容重复', updated_at = ? WHERE rowid = ?",
+                    (now, rowid),
+                )
+            fingerprint_dedup_removed = len(fp_dup_rowids)
 
         rows = conn.execute("SELECT id, image_paths, media_items FROM posts").fetchall()
         referenced_files: set[str] = set()
@@ -308,6 +411,7 @@ def validate_and_cleanup(media_dir: Path) -> dict[str, int]:
 
     return {
         "dedup_removed": dedup_removed,
+        "fingerprint_dedup_removed": fingerprint_dedup_removed,
         "media_fixed": media_fixed,
         "orphan_deleted": orphan_deleted,
     }

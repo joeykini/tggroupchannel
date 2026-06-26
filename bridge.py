@@ -22,11 +22,15 @@ from post_store import (
     StoredPost,
     add_or_ignore,
     exists,
+    find_by_fingerprint,
     get,
     list_pending_ids,
+    list_posts_by_chat,
+    mark_posts_status,
     update as store_update,
+    validate_and_cleanup,
 )
-from template_extract import render_publish_template
+from template_extract import content_fingerprint, render_publish_template
 from text_format import format_profile_caption, normalize_caption
 from tg_client import create_client, session_path
 
@@ -79,7 +83,7 @@ class ChannelBridge:
         await client.connect()
         if not await client.is_user_authorized():
             await client.disconnect()
-            raise RuntimeError("当前账号未登录，请先在网页完成手机号登录")
+            raise RuntimeError("当前账号未登录，请先运行: python forwarder.py login")
         return client
 
     async def is_logged_in(self) -> bool:
@@ -190,8 +194,8 @@ class ChannelBridge:
             rewritten = await rewrite_text(rewritten, self.settings)
         else:
             rewritten = format_profile_caption(rewritten)
-            if self.settings.template_extract_enabled and self.settings.publish_template.strip():
-                # 模板提取使用原文可避免“去源站”提前删除联系方式导致字段丢失。
+            use_template = self.settings.template_extract_enabled or not self.settings.ai_enabled
+            if use_template and self.settings.publish_template.strip():
                 extraction_source = format_profile_caption(original)
                 rewritten = render_publish_template(extraction_source, self.settings.publish_template)
 
@@ -236,41 +240,65 @@ class ChannelBridge:
             if own_temp_client and client.is_connected():
                 await client.disconnect()
 
+    def _collect_target_message_ids(self, sent: Message | list[Message] | None) -> list[int]:
+        if not sent:
+            return []
+        if isinstance(sent, list):
+            return [m.id for m in sent if m and getattr(m, "id", None)]
+        return [sent.id] if getattr(sent, "id", None) else []
+
     async def _send_from_paths(
         self, client: TelegramClient, media_items: list[dict[str, str]], caption: str
-    ) -> None:
+    ) -> list[int]:
         files = [str((MEDIA_DIR / Path(i.get("path", "")).name)) for i in media_items]
         existing = [f for f in files if Path(f).exists()]
         if existing:
-            await client.send_file(self.settings.target_channel, existing, caption=caption or None)
-        elif caption:
-            await client.send_message(self.settings.target_channel, caption, link_preview=False)
+            sent = await client.send_file(
+                self.settings.target_channel, existing, caption=caption or None
+            )
+            return self._collect_target_message_ids(sent)
+        if caption:
+            sent = await client.send_message(
+                self.settings.target_channel, caption, link_preview=False
+            )
+            return self._collect_target_message_ids(sent)
+        return []
 
     async def _send_bundle(
         self,
         client: TelegramClient,
         bundle: MessageBundle,
         caption: str,
-    ) -> None:
+    ) -> list[int]:
         s = self.settings
         if s.copy_without_forward_tag:
             media_msgs = [m for m in bundle.messages if m.media]
             if media_msgs:
                 files = [m.media for m in media_msgs]
-                await client.send_file(
+                sent = await client.send_file(
                     s.target_channel,
                     files,
                     caption=caption or None,
                 )
-            elif caption:
-                await client.send_message(s.target_channel, caption, link_preview=False)
-            return
-        await client.forward_messages(s.target_channel, bundle.messages)
+                return self._collect_target_message_ids(sent)
+            if caption:
+                sent = await client.send_message(s.target_channel, caption, link_preview=False)
+                return self._collect_target_message_ids(sent)
+            return []
+        sent = await client.forward_messages(s.target_channel, bundle.messages)
+        return self._collect_target_message_ids(sent)
 
     async def _process_bundle(self, client: TelegramClient, bundle: MessageBundle) -> None:
         post_id = bundle.post_key
         if exists(post_id):
             return
+
+        fingerprint = content_fingerprint(bundle.caption or "")
+        if self.settings.content_dedup_enabled and fingerprint:
+            dup = find_by_fingerprint(fingerprint)
+            if dup:
+                self._emit("INFO", f"跳过重复内容 {post_id} (同 {dup.id})")
+                return
 
         ok, reason = self._should_process(bundle)
         status = "captured" if ok else "blocked"
@@ -281,6 +309,7 @@ class ChannelBridge:
             message_ids=bundle.message_ids,
             text_original=bundle.caption or "",
             media_count=bundle.media_count,
+            content_fingerprint=fingerprint,
             status=status,
             blocked_reason="" if ok else reason,
         )
@@ -325,11 +354,12 @@ class ChannelBridge:
                     self._emit("ERROR", target_reason)
                 return
 
-            await self._send_bundle(client, bundle, final)
+            target_ids = await self._send_bundle(client, bundle, final)
             store_update(
                 post_id,
                 status="sent",
                 published_at=datetime.now(timezone.utc).isoformat(),
+                target_message_ids=target_ids,
             )
             self._emit("INFO", f"已发布 {post_id} -> {self.settings.target_channel}")
             await self._notify(f"✅ 已发布\n{post_id}\n目标: {self.settings.target_channel}")
@@ -368,12 +398,13 @@ class ChannelBridge:
                 try:
                     text = post.text_final or post.text_formatted or post.text_cleaned or post.text_original
                     media_items = post.media_items or [{"type": "image", "path": p} for p in post.image_paths]
-                    await self._send_from_paths(client, media_items, text)
+                    target_ids = await self._send_from_paths(client, media_items, text)
                     store_update(
                         pid,
                         status="sent",
                         published_at=datetime.now(timezone.utc).isoformat(),
                         error="",
+                        target_message_ids=target_ids,
                     )
                     published += 1
                 except Exception as e:
@@ -463,6 +494,143 @@ class ChannelBridge:
                 await client.disconnect()
         return {"handled": handled}
 
+    async def _messages_still_exist(
+        self, client: TelegramClient, source: str, message_ids: list[int]
+    ) -> bool:
+        if not message_ids:
+            return False
+        try:
+            msgs = await client.get_messages(source, ids=message_ids)
+        except Exception:
+            return False
+        if not isinstance(msgs, list):
+            msgs = [msgs]
+        for msg in msgs:
+            if msg is None:
+                continue
+            if getattr(msg, "deleted", False):
+                continue
+            if getattr(msg, "id", None):
+                return True
+        return False
+
+    async def sync_with_source(self) -> dict:
+        """对比源频道：标记已删帖、清理重复项，可选同步删除目标频道。"""
+        self.reload_settings()
+        errs = self.settings.validate_for_capture()
+        if errs:
+            raise ValueError("; ".join(errs))
+
+        client = await self._get_send_client()
+        own_temp_client = client is not self._client
+        source_deleted = 0
+        target_deleted = 0
+        rescanned = 0
+        cleanup: dict[str, int] = {}
+        active_statuses = ["captured", "rewritten", "pending", "sent", "failed"]
+
+        try:
+            for source in self.settings.source_channels:
+                entity = await client.get_entity(source)
+                chat_id = int(getattr(entity, "id", 0) or 0)
+                if not chat_id:
+                    continue
+
+                live_keys: set[str] = set()
+                grouped: dict[int, list[Message]] = defaultdict(list)
+                singles: list[Message] = []
+                async for msg in client.iter_messages(
+                    source, limit=self.settings.sync_scan_limit
+                ):
+                    if msg.grouped_id:
+                        grouped[int(msg.grouped_id)].append(msg)
+                    else:
+                        singles.append(msg)
+                for msgs in grouped.values():
+                    bundle = from_messages(msgs, chat_id)
+                    live_keys.add(bundle.post_key)
+                    if not exists(bundle.post_key):
+                        await self._process_bundle(client, bundle)
+                        rescanned += 1
+                for msg in singles:
+                    bundle = from_messages([msg], chat_id)
+                    live_keys.add(bundle.post_key)
+                    if not exists(bundle.post_key):
+                        await self._process_bundle(client, bundle)
+                        rescanned += 1
+
+                posts = list_posts_by_chat(chat_id, statuses=active_statuses)
+                for post in posts:
+                    if post.source_key in live_keys:
+                        continue
+                    still_there = await self._messages_still_exist(
+                        client, source, post.message_ids
+                    )
+                    if still_there:
+                        continue
+
+                    mark_posts_status([post.id], "source_deleted", "源频道已删除")
+                    source_deleted += 1
+                    self._emit("INFO", f"源帖已删除: {post.id}")
+
+                    if (
+                        self.settings.delete_from_target_on_source_removed
+                        and post.target_message_ids
+                        and self.settings.target_channel
+                    ):
+                        try:
+                            await client.delete_messages(
+                                self.settings.target_channel, post.target_message_ids
+                            )
+                            target_deleted += 1
+                            self._emit("INFO", f"已同步删除目标帖: {post.id}")
+                        except Exception as e:
+                            self._emit("ERROR", f"删除目标帖失败 {post.id}: {e}")
+
+            cleanup = validate_and_cleanup(MEDIA_DIR)
+            self._emit(
+                "INFO",
+                "同步完成: "
+                f"源删 {source_deleted}, 目标删 {target_deleted}, "
+                f"补抓 {rescanned}, 指纹去重 {cleanup.get('fingerprint_dedup_removed', 0)}",
+            )
+        finally:
+            if own_temp_client and client.is_connected():
+                await client.disconnect()
+
+        return {
+            "source_deleted": source_deleted,
+            "target_deleted": target_deleted,
+            "rescanned": rescanned,
+            "cleanup": cleanup,
+        }
+
+    async def cli_login(self) -> dict:
+        """命令行交互登录。"""
+        self.reload_settings()
+        if not self.settings.api_id or not self.settings.api_hash:
+            raise ValueError("请先在 .env 填写 API_ID 与 API_HASH")
+
+        client = create_client(self.settings)
+        await client.connect()
+        if await client.is_user_authorized():
+            me = await client.get_me()
+            await client.disconnect()
+            return {"ok": True, "user": f"{me.first_name} (@{me.username or '无用户名'})"}
+
+        phone = input("手机号（含国际区号，如 +86...）: ").strip()
+        await client.send_code_request(phone)
+        code = input("验证码: ").strip()
+        try:
+            await client.sign_in(phone, code)
+        except SessionPasswordNeededError:
+            password = input("二步验证密码: ").strip()
+            await client.sign_in(password=password)
+
+        me = await client.get_me()
+        await client.disconnect()
+        return {"ok": True, "user": f"{me.first_name} (@{me.username or '无用户名'})"}
+
     def _register_handlers(self, client: TelegramClient) -> None:
         chats = self.settings.source_channels
 
@@ -503,7 +671,7 @@ class ChannelBridge:
         if not await self._client.is_user_authorized():
             await self._client.disconnect()
             self._client = None
-            raise ValueError("当前会话未登录，请先在网页发送验证码并完成登录")
+            raise ValueError("当前会话未登录，请先运行: python forwarder.py login")
         me = await self._client.get_me()
         self._emit("INFO", f"已登录 {me.first_name} (@{me.username or '-'})")
         await self._verify(self._client)

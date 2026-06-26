@@ -76,6 +76,11 @@ class Settings:
     ai_enabled: bool = False
     ai_prompt: str = ""
     template_extract_enabled: bool = False
+    content_dedup_enabled: bool = True
+    sync_enabled: bool = True
+    sync_interval_minutes: int = 60
+    sync_scan_limit: int = 200
+    delete_from_target_on_source_removed: bool = False
     publish_template: str = (
         "📊 {review_count}条车评，综合评分\n"
         "好评 {good_rate}    |人照 {photo_score}    |服务 {service_score}\n"
@@ -104,10 +109,11 @@ class Settings:
     daily_fetch_limit: int = 30
     # 抓取启动时是否先补抓一轮
     fetch_on_start: bool = False
-    # Bot 推送
+    # Bot 推送与管理
     bot_enabled: bool = False
     bot_token: str = ""
     bot_chat_id: str = ""
+    bot_admin_ids: list[str] = field(default_factory=list)
 
     def validate_for_capture(self) -> list[str]:
         errors: list[str] = []
@@ -134,6 +140,7 @@ class Settings:
         d["source_channels"] = ",".join(self.source_channels)
         d["filter_keywords"] = ",".join(self.filter_keywords)
         d["blocked_keywords"] = ",".join(self.blocked_keywords)
+        d["bot_admin_ids"] = ",".join(self.bot_admin_ids)
         return d
 
     @classmethod
@@ -158,6 +165,13 @@ class Settings:
             ai_enabled=_bool(data.get("ai_enabled"), False),
             ai_prompt=str(data.get("ai_prompt") or ""),
             template_extract_enabled=_bool(data.get("template_extract_enabled"), False),
+            content_dedup_enabled=_bool(data.get("content_dedup_enabled"), True),
+            sync_enabled=_bool(data.get("sync_enabled"), True),
+            sync_interval_minutes=max(5, _int(data.get("sync_interval_minutes"), 60)),
+            sync_scan_limit=max(20, _int(data.get("sync_scan_limit"), 200)),
+            delete_from_target_on_source_removed=_bool(
+                data.get("delete_from_target_on_source_removed"), False
+            ),
             publish_template=str(data.get("publish_template") or cls.publish_template),
             openai_api_key=str(data.get("openai_api_key") or "").strip(),
             openai_base_url=str(data.get("openai_base_url") or "https://api.openai.com/v1").rstrip("/"),
@@ -171,6 +185,7 @@ class Settings:
             bot_enabled=_bool(data.get("bot_enabled"), False),
             bot_token=str(data.get("bot_token") or "").strip(),
             bot_chat_id=str(data.get("bot_chat_id") or "").strip(),
+            bot_admin_ids=[x for x in _split_list(data.get("bot_admin_ids", []))],
         )
 
 
@@ -191,6 +206,11 @@ def load_settings() -> Settings:
         "ai_enabled": os.getenv("AI_ENABLED"),
         "ai_prompt": os.getenv("AI_PROMPT"),
         "template_extract_enabled": os.getenv("TEMPLATE_EXTRACT_ENABLED"),
+        "content_dedup_enabled": os.getenv("CONTENT_DEDUP_ENABLED"),
+        "sync_enabled": os.getenv("SYNC_ENABLED"),
+        "sync_interval_minutes": os.getenv("SYNC_INTERVAL_MINUTES"),
+        "sync_scan_limit": os.getenv("SYNC_SCAN_LIMIT"),
+        "delete_from_target_on_source_removed": os.getenv("DELETE_FROM_TARGET_ON_SOURCE_REMOVED"),
         "publish_template": os.getenv("PUBLISH_TEMPLATE"),
         "openai_api_key": os.getenv("OPENAI_API_KEY"),
         "openai_base_url": os.getenv("OPENAI_BASE_URL"),
@@ -204,6 +224,7 @@ def load_settings() -> Settings:
         "bot_enabled": os.getenv("BOT_ENABLED"),
         "bot_token": os.getenv("BOT_TOKEN"),
         "bot_chat_id": os.getenv("BOT_CHAT_ID"),
+        "bot_admin_ids": os.getenv("BOT_ADMIN_IDS"),
     }
     for k, v in env_map.items():
         if v is not None and str(v).strip() != "":
@@ -226,3 +247,21 @@ def save_settings(settings: Settings) -> None:
         json.dumps(settings.to_dict(), ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+
+
+def patch_settings(**changes: str | bool | int | list[str]) -> Settings:
+    """合并修改并写入 settings.json。"""
+    current = load_settings().to_dict()
+    for key, value in changes.items():
+        if key in ("source_channels", "filter_keywords", "blocked_keywords", "bot_admin_ids"):
+            if isinstance(value, list):
+                current[key] = ",".join(value)
+            else:
+                current[key] = str(value)
+        elif isinstance(value, bool):
+            current[key] = value
+        else:
+            current[key] = value
+    updated = Settings.from_dict(current)
+    save_settings(updated)
+    return updated
