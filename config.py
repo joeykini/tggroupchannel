@@ -81,6 +81,17 @@ class Settings:
     sync_interval_minutes: int = 60
     sync_scan_limit: int = 200
     delete_from_target_on_source_removed: bool = False
+    roster_enabled: bool = True
+    roster_group_1: str = "@HuaiAnHub"
+    roster_channel_1: str = "@huaian008"
+    roster_group_2: str = "@HuaiAn_YangZhou"
+    roster_channel_2: str = "@huaian0901"
+    roster_trigger_keyword: str = "出勤"
+    roster_bot_names: list[str] = field(default_factory=lambda: ["修车小助手"])
+    roster_sync_enabled: bool = True
+    roster_sync_interval_minutes: int = 120
+    delete_inactive_from_target: bool = True
+    person_dedup_enabled: bool = True
     publish_template: str = (
         "📊 {review_count}条车评，综合评分\n"
         "好评 {good_rate}    |人照 {photo_score}    |服务 {service_score}\n"
@@ -141,6 +152,7 @@ class Settings:
         d["filter_keywords"] = ",".join(self.filter_keywords)
         d["blocked_keywords"] = ",".join(self.blocked_keywords)
         d["bot_admin_ids"] = ",".join(self.bot_admin_ids)
+        d["roster_bot_names"] = ",".join(self.roster_bot_names)
         return d
 
     @classmethod
@@ -172,11 +184,22 @@ class Settings:
             delete_from_target_on_source_removed=_bool(
                 data.get("delete_from_target_on_source_removed"), False
             ),
+            roster_enabled=_bool(data.get("roster_enabled"), True),
+            roster_group_1=str(data.get("roster_group_1") or "@HuaiAnHub").strip(),
+            roster_channel_1=str(data.get("roster_channel_1") or "@huaian008").strip(),
+            roster_group_2=str(data.get("roster_group_2") or "@HuaiAn_YangZhou").strip(),
+            roster_channel_2=str(data.get("roster_channel_2") or "@huaian0901").strip(),
+            roster_trigger_keyword=str(data.get("roster_trigger_keyword") or "出勤").strip(),
+            roster_bot_names=_split_list(data.get("roster_bot_names", ["修车小助手"])),
+            roster_sync_enabled=_bool(data.get("roster_sync_enabled"), True),
+            roster_sync_interval_minutes=max(30, _int(data.get("roster_sync_interval_minutes"), 120)),
+            delete_inactive_from_target=_bool(data.get("delete_inactive_from_target"), True),
+            person_dedup_enabled=_bool(data.get("person_dedup_enabled"), True),
             publish_template=str(data.get("publish_template") or cls.publish_template),
             openai_api_key=str(data.get("openai_api_key") or "").strip(),
             openai_base_url=str(data.get("openai_base_url") or "https://api.openai.com/v1").rstrip("/"),
             openai_model=str(data.get("openai_model") or "gpt-4o-mini").strip(),
-            auto_publish=_bool(data.get("auto_publish"), True),
+            auto_publish=_bool(data.get("auto_publish"), False),
             require_media=_bool(data.get("require_media"), False),
             daily_fetch_enabled=_bool(data.get("daily_fetch_enabled"), False),
             daily_fetch_time=str(data.get("daily_fetch_time") or "03:00").strip(),
@@ -211,6 +234,17 @@ def load_settings() -> Settings:
         "sync_interval_minutes": os.getenv("SYNC_INTERVAL_MINUTES"),
         "sync_scan_limit": os.getenv("SYNC_SCAN_LIMIT"),
         "delete_from_target_on_source_removed": os.getenv("DELETE_FROM_TARGET_ON_SOURCE_REMOVED"),
+        "roster_enabled": os.getenv("ROSTER_ENABLED"),
+        "roster_group_1": os.getenv("ROSTER_GROUP_1"),
+        "roster_channel_1": os.getenv("ROSTER_CHANNEL_1"),
+        "roster_group_2": os.getenv("ROSTER_GROUP_2"),
+        "roster_channel_2": os.getenv("ROSTER_CHANNEL_2"),
+        "roster_trigger_keyword": os.getenv("ROSTER_TRIGGER_KEYWORD"),
+        "roster_bot_names": os.getenv("ROSTER_BOT_NAMES"),
+        "roster_sync_enabled": os.getenv("ROSTER_SYNC_ENABLED"),
+        "roster_sync_interval_minutes": os.getenv("ROSTER_SYNC_INTERVAL_MINUTES"),
+        "delete_inactive_from_target": os.getenv("DELETE_INACTIVE_FROM_TARGET"),
+        "person_dedup_enabled": os.getenv("PERSON_DEDUP_ENABLED"),
         "publish_template": os.getenv("PUBLISH_TEMPLATE"),
         "openai_api_key": os.getenv("OPENAI_API_KEY"),
         "openai_base_url": os.getenv("OPENAI_BASE_URL"),
@@ -253,7 +287,7 @@ def patch_settings(**changes: str | bool | int | list[str]) -> Settings:
     """合并修改并写入 settings.json。"""
     current = load_settings().to_dict()
     for key, value in changes.items():
-        if key in ("source_channels", "filter_keywords", "blocked_keywords", "bot_admin_ids"):
+        if key in ("source_channels", "filter_keywords", "blocked_keywords", "bot_admin_ids", "roster_bot_names"):
             if isinstance(value, list):
                 current[key] = ",".join(value)
             else:

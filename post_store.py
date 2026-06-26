@@ -31,7 +31,9 @@ class StoredPost:
     media_count: int = 0
     content_fingerprint: str = ""
     target_message_ids: list[int] = field(default_factory=list)
-    status: str = "captured"  # captured | rewritten | pending | sent | failed | blocked | source_deleted | duplicate
+    person_id: str = ""
+    source_channel: str = ""
+    status: str = "captured"  # captured | rewritten | pending | sent | failed | blocked | source_deleted | duplicate | inactive
     error: str = ""
     blocked_reason: str = ""
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
@@ -120,6 +122,8 @@ def _row_to_post(row: sqlite3.Row) -> StoredPost:
         target_message_ids=json.loads(
             row["target_message_ids"] if "target_message_ids" in row.keys() else "[]"
         ),
+        person_id=row["person_id"] if "person_id" in row.keys() else "",
+        source_channel=row["source_channel"] if "source_channel" in row.keys() else "",
         status=row["status"] or "captured",
         error=row["error"] or "",
         blocked_reason=row["blocked_reason"] or "",
@@ -148,8 +152,9 @@ def add_or_ignore(post: StoredPost) -> bool:
                 media_items,
                 text_original, text_cleaned, text_formatted, text_final,
                 media_count, content_fingerprint, target_message_ids,
+                person_id, source_channel,
                 status, error, blocked_reason, created_at, updated_at, published_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 post.id,
@@ -165,6 +170,8 @@ def add_or_ignore(post: StoredPost) -> bool:
                 post.media_count,
                 post.content_fingerprint,
                 json.dumps(post.target_message_ids, ensure_ascii=False),
+                post.person_id,
+                post.source_channel,
                 post.status,
                 post.error,
                 post.blocked_reason,
@@ -285,6 +292,21 @@ def find_by_fingerprint(fingerprint: str, exclude_id: str | None = None) -> Stor
     with _lock, _connect() as conn:
         row = conn.execute(sql, params).fetchone()
     return _row_to_post(row) if row else None
+
+
+def list_posts_by_person_id(person_id: str, statuses: list[str] | None = None) -> list[StoredPost]:
+    if not person_id:
+        return []
+    sql = "SELECT * FROM posts WHERE person_id = ?"
+    params: list[Any] = [person_id]
+    if statuses:
+        q = ",".join("?" for _ in statuses)
+        sql += f" AND status IN ({q})"
+        params.extend(statuses)
+    sql += " ORDER BY created_at DESC"
+    with _lock, _connect() as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return [_row_to_post(r) for r in rows]
 
 
 def mark_posts_status(post_ids: list[str], status: str, error: str = "") -> int:

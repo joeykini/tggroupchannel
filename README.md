@@ -21,7 +21,27 @@ python forwarder.py run
 | `python forwarder.py login` | 命令行登录（首次必做） |
 | `python forwarder.py run` | 监听源频道，自动抓取/模板提取/发布 |
 | `python forwarder.py fetch --limit 30` | 立即补抓最近帖子 |
-| `python forwarder.py sync` | 对比源频道删帖与重复项 |
+| `python forwarder.py sync` | 对比源频道删帖与内容重复 |
+| `python forwarder.py roster` | 出勤名单同步：合并在岗、删不在岗（统一榜） |
+
+## 出勤名单 + 统一榜（两组源）
+
+| 组别 | 出勤群 | 源频道 |
+|------|--------|--------|
+| 1 | [@HuaiAnHub](https://t.me/HuaiAnHub) | [@huaian008](https://t.me/huaian008) |
+| 2 | [@HuaiAn_YangZhou](https://t.me/HuaiAn_YangZhou) | [@huaian0901](https://t.me/huaian0901) |
+
+统一发布到 [@huaianbendi](https://t.me/huaianbendi)：
+
+- 🟢 在线 / 🔴 休息 **都在岗**（只要在出勤名单里就不删）
+- 同一人跨频道 **合并资料**，写入人员库（**不自动发布**）
+- 管理 Bot：**人员库** → 点名字预览 → 点发布
+- 广告/无模板内容 **不入库**
+- **不在出勤名单** 且已发布过 → 可选删统一榜帖（`DELETE_INACTIVE_FROM_TARGET=true`）
+
+```bash
+python forwarder.py roster   # 手动：群内触发「出勤」→ 解析 → 发布/删帖
+```
 
 ## 流程
 

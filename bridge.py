@@ -15,9 +15,11 @@ from telethon.tl.types import DocumentAttributeVideo, Message, MessageMediaDocum
 
 from ai_rewrite import rewrite_text
 from config import ROOT, Settings, load_settings
+from content_validate import validate_for_capture
 from filters import is_blocked_text, strip_source_references
 from message_bundle import MessageBundle, from_messages
 from notifier import push_bot_message
+from person_registry import person_id_from_text
 from post_store import (
     StoredPost,
     add_or_ignore,
@@ -33,6 +35,7 @@ from post_store import (
 from template_extract import content_fingerprint, render_publish_template
 from text_format import format_profile_caption, normalize_caption
 from tg_client import create_client, session_path
+from roster_sync import RosterSync
 
 log = logging.getLogger("bridge")
 
@@ -58,6 +61,7 @@ class ChannelBridge:
         self._running = False
         self._target_check_cache: tuple[str, bool, str] | None = None
         self._target_invalid_notified = False
+        self._channel_id_to_name: dict[int, str] = {}
 
     @property
     def running(self) -> bool:
@@ -68,10 +72,26 @@ class ChannelBridge:
         if self.on_log:
             self.on_log(level, msg)
 
+    def _roster(self) -> RosterSync:
+        return RosterSync(self.settings, MEDIA_DIR, emit=self._emit)
+
+    async def _refresh_channel_map(self, client: TelegramClient) -> None:
+        self._channel_id_to_name.clear()
+        for ch in self.settings.source_channels:
+            try:
+                ent = await client.get_entity(ch)
+                self._channel_id_to_name[int(ent.id)] = ch
+            except Exception as e:
+                self._emit("WARNING", f"无法解析源频道 {ch}: {e}")
+
+    def _source_channel_for(self, chat_id: int) -> str:
+        return self._channel_id_to_name.get(chat_id, "")
+
     def reload_settings(self) -> None:
         self.settings = load_settings()
         self._target_check_cache = None
         self._target_invalid_notified = False
+        self._channel_id_to_name.clear()
 
     async def _notify(self, text: str) -> None:
         await push_bot_message(self.settings, text)
@@ -288,37 +308,73 @@ class ChannelBridge:
         sent = await client.forward_messages(s.target_channel, bundle.messages)
         return self._collect_target_message_ids(sent)
 
+    async def publish_person_by_id(self, person_id: str) -> dict:
+        """Bot 手动发布单个人员。"""
+        self.reload_settings()
+        if not person_id:
+            return {"ok": False, "reason": "缺少 person_id"}
+        errs = self.settings.validate_for_publish()
+        if errs:
+            return {"ok": False, "reason": "; ".join(errs)}
+        client = await self._get_send_client()
+        own_temp_client = client is not self._client
+        try:
+            ok = await self._roster().publish_person(client, person_id)
+            if ok:
+                await self._notify(
+                    f"✅ 已发布人员\n{person_id}\n目标: {self.settings.target_channel}"
+                )
+            return {"ok": ok, "person_id": person_id}
+        finally:
+            if own_temp_client and client.is_connected():
+                await client.disconnect()
+
     async def _process_bundle(self, client: TelegramClient, bundle: MessageBundle) -> None:
         post_id = bundle.post_key
         if exists(post_id):
             return
 
-        fingerprint = content_fingerprint(bundle.caption or "")
+        caption = bundle.caption or ""
+        valid, vreason = validate_for_capture(caption, self.settings)
+        if not valid:
+            self._emit("INFO", f"跳过 {post_id}: {vreason}")
+            return
+
+        fingerprint = content_fingerprint(caption)
+        pid = person_id_from_text(caption)
         if self.settings.content_dedup_enabled and fingerprint:
             dup = find_by_fingerprint(fingerprint)
             if dup:
-                self._emit("INFO", f"跳过重复内容 {post_id} (同 {dup.id})")
-                return
+                if self.settings.roster_enabled and pid:
+                    dup_pid = person_id_from_text(dup.text_original or "")
+                    if dup_pid and dup_pid == pid:
+                        pass
+                    else:
+                        self._emit("INFO", f"跳过重复内容 {post_id} (同 {dup.id})")
+                        return
+                else:
+                    self._emit("INFO", f"跳过重复内容 {post_id} (同 {dup.id})")
+                    return
 
         ok, reason = self._should_process(bundle)
-        status = "captured" if ok else "blocked"
+        if not ok:
+            self._emit("INFO", f"跳过 {post_id}: {reason}")
+            return
+
         stored = StoredPost(
             id=post_id,
             source_key=post_id,
             chat_id=bundle.chat_id,
             message_ids=bundle.message_ids,
-            text_original=bundle.caption or "",
+            text_original=caption,
             media_count=bundle.media_count,
             content_fingerprint=fingerprint,
-            status=status,
-            blocked_reason="" if ok else reason,
+            person_id=pid,
+            source_channel=self._source_channel_for(bundle.chat_id),
+            status="captured",
         )
         inserted = add_or_ignore(stored)
         if not inserted:
-            return
-
-        if not ok:
-            self._emit("INFO", f"已过滤 {post_id}: {reason}")
             return
 
         try:
@@ -341,28 +397,9 @@ class ChannelBridge:
                 status="rewritten",
             )
 
-            if not self.settings.auto_publish:
-                store_update(post_id, status="pending")
-                self._emit("INFO", f"待发布: {post_id}")
-                return
-
-            ok_target, target_reason = await self._check_target_channel(client)
-            if not ok_target:
-                store_update(post_id, status="pending", error=target_reason)
-                if not self._target_invalid_notified:
-                    self._target_invalid_notified = True
-                    self._emit("ERROR", target_reason)
-                return
-
-            target_ids = await self._send_bundle(client, bundle, final)
-            store_update(
-                post_id,
-                status="sent",
-                published_at=datetime.now(timezone.utc).isoformat(),
-                target_message_ids=target_ids,
-            )
-            self._emit("INFO", f"已发布 {post_id} -> {self.settings.target_channel}")
-            await self._notify(f"✅ 已发布\n{post_id}\n目标: {self.settings.target_channel}")
+            await self._roster().ingest_post_to_library(post_id, original)
+            self._emit("INFO", f"已入人员库: {post_id}")
+            return
         except ChatAdminRequiredError:
             store_update(post_id, status="failed", error="目标频道无发消息权限")
             self._emit("ERROR", "目标频道无发消息权限")
@@ -464,6 +501,7 @@ class ChannelBridge:
         own_temp_client = client is not self._client
         handled = 0
         try:
+            await self._refresh_channel_map(client)
             for source in self.settings.source_channels:
                 grouped: dict[int, list[Message]] = defaultdict(list)
                 singles: list[Message] = []
@@ -605,6 +643,20 @@ class ChannelBridge:
             "cleanup": cleanup,
         }
 
+    async def sync_roster(self) -> dict:
+        """抓取出勤名单 → 合并在岗人员 → 不在岗删目标帖。"""
+        self.reload_settings()
+        client = await self._get_send_client()
+        own_temp_client = client is not self._client
+        try:
+            result = await self._roster().reconcile_all(client)
+            self._emit("INFO", f"出勤同步完成: {result}")
+            await self._notify(f"📋 出勤同步\n{result}")
+            return result
+        finally:
+            if own_temp_client and client.is_connected():
+                await client.disconnect()
+
     async def cli_login(self) -> dict:
         """命令行交互登录。"""
         self.reload_settings()
@@ -674,12 +726,15 @@ class ChannelBridge:
             raise ValueError("当前会话未登录，请先运行: python forwarder.py login")
         me = await self._client.get_me()
         self._emit("INFO", f"已登录 {me.first_name} (@{me.username or '-'})")
+        await self._refresh_channel_map(self._client)
         await self._verify(self._client)
         self._emit("INFO", f"监听中: {', '.join(self.settings.source_channels)}")
         self._running = True
 
         if self.settings.fetch_on_start:
             await self.fetch_recent_once(limit_per_channel=self.settings.daily_fetch_limit)
+        if self.settings.roster_sync_enabled and self.settings.roster_enabled:
+            asyncio.create_task(self._initial_roster_sync())
 
         async def _run() -> None:
             try:
@@ -688,6 +743,13 @@ class ChannelBridge:
                 self._running = False
 
         self._task = asyncio.create_task(_run())
+
+    async def _initial_roster_sync(self) -> None:
+        await asyncio.sleep(3)
+        try:
+            await self.sync_roster()
+        except Exception as e:
+            self._emit("ERROR", f"启动出勤同步失败: {e}")
 
     async def stop(self) -> None:
         if self._client and self._client.is_connected():

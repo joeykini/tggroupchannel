@@ -11,7 +11,41 @@ import httpx
 from bridge import ChannelBridge
 from config import Settings, load_settings, patch_settings
 
+from roster_store import count_library_persons, get_person, list_library_persons
+
 log = logging.getLogger("bot-admin")
+LIB_PAGE_SIZE = 12
+
+BOT_COMMANDS = [
+    {"command": "start", "description": "启动欢迎与主菜单"},
+    {"command": "menu", "description": "控制台（开关/同步按钮）"},
+    {"command": "library", "description": "人员库（预览与发布）"},
+    {"command": "status", "description": "查看当前配置"},
+    {"command": "sync", "description": "源频道同步（删帖/去重）"},
+    {"command": "roster", "description": "出勤名单同步"},
+    {"command": "fetch", "description": "立即补抓源频道"},
+    {"command": "help", "description": "完整指令说明"},
+    {"command": "toggle", "description": "切换开关，如 /toggle dedup"},
+    {"command": "set", "description": "改配置，如 /set target @频道"},
+]
+
+MAIN_REPLY_KEYBOARD = {
+    "keyboard": [
+        [{"text": "📚 人员库"}, {"text": "⚙️ 控制台"}],
+        [{"text": "🔄 源站同步"}, {"text": "📋 出勤同步"}],
+        [{"text": "📥 补抓"}, {"text": "❓ 帮助"}],
+    ],
+    "resize_keyboard": True,
+}
+
+TEXT_ACTIONS = {
+    "📚 人员库": "library",
+    "⚙️ 控制台": "menu",
+    "🔄 源站同步": "sync",
+    "📋 出勤同步": "roster",
+    "📥 补抓": "fetch",
+    "❓ 帮助": "help",
+}
 
 BOOL_KEYS = {
     "ai": "ai_enabled",
@@ -93,6 +127,7 @@ class BotAdmin:
         chat_id: int | str,
         text: str,
         reply_markup: dict | None = None,
+        reply_keyboard: dict | None = None,
     ) -> None:
         payload: dict[str, Any] = {
             "chat_id": chat_id,
@@ -101,7 +136,15 @@ class BotAdmin:
         }
         if reply_markup:
             payload["reply_markup"] = reply_markup
+        elif reply_keyboard:
+            payload["reply_markup"] = reply_keyboard
         await self._call(token, "sendMessage", payload)
+
+    async def _register_bot_commands(self, token: str) -> None:
+        try:
+            await self._call(token, "setMyCommands", {"commands": BOT_COMMANDS})
+        except Exception as e:
+            log.warning("注册 Bot 命令菜单失败: %s", e)
 
     async def _answer_callback(self, token: str, callback_id: str, text: str = "") -> None:
         await self._call(
@@ -119,7 +162,7 @@ class BotAdmin:
             f"源频道: {', '.join(settings.source_channels) or '（未设置）'}\n"
             f"目标频道: {settings.target_channel or '（未设置）'}\n"
             f"AI 复写: {self._on_off(settings.ai_enabled)}\n"
-            f"自动发布: {self._on_off(settings.auto_publish)}\n"
+            f"自动发布: {self._on_off(settings.auto_publish)}（默认关，请在人员库手动发布）\n"
             f"源站同步: {self._on_off(settings.sync_enabled)} "
             f"（每 {settings.sync_interval_minutes} 分钟）\n"
             f"内容去重: {self._on_off(settings.content_dedup_enabled)}\n"
@@ -148,37 +191,151 @@ class BotAdmin:
             ],
             [
                 {"text": "立即同步", "callback_data": "action:sync"},
+                {"text": "出勤同步", "callback_data": "action:roster"},
                 {"text": "立即补抓", "callback_data": "action:fetch"},
             ],
             [
+                {"text": "人员库", "callback_data": "lib:p:0"},
                 {"text": "刷新状态", "callback_data": "action:status"},
             ],
         ]
         return {"inline_keyboard": rows}
 
-    def _help_text(self) -> str:
-        lines = [
-            "🤖 管理 Bot 命令",
-            "",
-            "/menu — 按钮面板",
-            "/status — 查看配置",
-            "/toggle <项> — 切换开关",
-            "  项: ai auto sync dedup strip media notify del_target daily",
-            "/set <项> <值> — 修改参数",
-        ]
-        for key, (_, label) in SETTABLE_KEYS.items():
-            lines.append(f"  {key} — {label}")
-        lines.extend(
-            [
-                "",
-                "示例:",
-                "/set source @a,@b",
-                "/set target @my_channel",
-                "/set sync_interval 30",
-                "/toggle auto",
+    def _person_status_icon(self, roster_status: str) -> str:
+        if roster_status == "online":
+            return "🟢"
+        if roster_status == "resting":
+            return "🔴"
+        if roster_status == "inactive":
+            return "⚫"
+        return "⚪"
+
+    def _person_button_label(self, person) -> str:
+        icon = self._person_status_icon(person.roster_status)
+        name = person.name or "未命名"
+        region = person.region or "?"
+        if person.library_status == "published":
+            return f"{icon}{name}·{region} ✓"
+        return f"{icon}{name}·{region}"
+
+    def _library_list_keyboard(self, page: int) -> tuple[str, dict]:
+        total = count_library_persons()
+        if total == 0:
+            return "人员库为空。先抓取频道帖或运行出勤同步。", {"inline_keyboard": [[{"text": "返回菜单", "callback_data": "action:status"}]]}
+
+        pages = max(1, (total + LIB_PAGE_SIZE - 1) // LIB_PAGE_SIZE)
+        page = max(0, min(page, pages - 1))
+        persons = list_library_persons(limit=LIB_PAGE_SIZE, offset=page * LIB_PAGE_SIZE)
+        rows: list[list[dict[str, str]]] = []
+        row: list[dict[str, str]] = []
+        for p in persons:
+            label = self._person_button_label(p)[:28]
+            row.append({"text": label, "callback_data": f"lib:v:{p.person_id}"})
+            if len(row) == 2:
+                rows.append(row)
+                row = []
+        if row:
+            rows.append(row)
+
+        nav: list[dict[str, str]] = []
+        if page > 0:
+            nav.append({"text": "◀ 上页", "callback_data": f"lib:p:{page - 1}"})
+        nav.append({"text": f"{page + 1}/{pages}", "callback_data": f"lib:p:{page}"})
+        if page < pages - 1:
+            nav.append({"text": "下页 ▶", "callback_data": f"lib:p:{page + 1}"})
+        rows.append(nav)
+        rows.append([{"text": "返回菜单", "callback_data": "action:status"}])
+        text = f"📚 人员库（共 {total} 人）\n点击名字预览，预览页可发布。"
+        return text, {"inline_keyboard": rows}
+
+    def _person_preview_keyboard(self, person_id: str) -> dict:
+        return {
+            "inline_keyboard": [
+                [
+                    {"text": "✅ 发布到频道", "callback_data": f"lib:pub:{person_id}"},
+                    {"text": "« 返回列表", "callback_data": "lib:p:0"},
+                ]
             ]
+        }
+
+    async def _show_library(self, token: str, chat_id: int | str, page: int = 0) -> None:
+        text, markup = self._library_list_keyboard(page)
+        await self._send(token, chat_id, text, reply_markup=markup)
+
+    async def _show_person_preview(self, token: str, chat_id: int | str, person_id: str) -> None:
+        person = get_person(person_id)
+        if not person or not person.preview_text:
+            await self._send(token, chat_id, "未找到该人员或尚无预览内容。")
+            return
+        icon = self._person_status_icon(person.roster_status)
+        header = f"{icon} {person.name} · {person.region}\n状态: {person.library_status}\n\n"
+        body = person.preview_text[:3600]
+        await self._send(token, chat_id, header + body, reply_markup=self._person_preview_keyboard(person_id))
+
+    def _welcome_text(self) -> str:
+        total = count_library_persons()
+        return (
+            "👋 频道抓取管理 Bot\n\n"
+            f"人员库当前: {total} 人\n"
+            "流程: 抓取 → 人员库预览 → 手动发布\n\n"
+            "底部键盘可快捷操作；输入 / 可看到命令列表。\n"
+            "发送 /help 查看完整说明。"
         )
-        return "\n".join(lines)
+
+    def _help_text(self) -> list[str]:
+        """分段返回，避免超长。"""
+        p1 = (
+            "📖 指令一览\n\n"
+            "【常用】\n"
+            "/library — 人员库：点名字预览，再点发布\n"
+            "/menu — 控制台按钮（开关、同步）\n"
+            "/status — 查看当前配置\n"
+            "/sync — 源频道同步（删源帖标记、内容去重）\n"
+            "/roster — 出勤名单同步（更新在岗、刷新人员库）\n"
+            "/fetch — 立即补抓源频道最近帖子\n"
+            "/help — 本说明\n\n"
+            "【底部键盘】\n"
+            "📚人员库 | ⚙️控制台 | 🔄源站同步\n"
+            "📋出勤同步 | 📥补抓 | ❓帮助"
+        )
+        p2 = (
+            "【开关 /toggle <项>】\n"
+            "ai — AI 复写\n"
+            "auto — 自动发布（默认关，建议用手动发布）\n"
+            "sync — 定时源站同步\n"
+            "dedup — 内容指纹去重\n"
+            "strip — 去源站痕迹\n"
+            "media — 仅抓带图帖子\n"
+            "notify — 状态 Bot 推送\n"
+            "del_target — 源删时同步删目标帖\n"
+            "daily — 每日定时补抓\n\n"
+            "示例: /toggle dedup"
+        )
+        p3 = "【配置 /set <项> <值>】\n"
+        for key, (_, label) in SETTABLE_KEYS.items():
+            p3 += f"{key} — {label}\n"
+        p3 += (
+            "\n示例:\n"
+            "/set source @huaian008,@huaian0901\n"
+            "/set target @huaianbendi\n"
+            "/set blocked vpn,机场,广告\n"
+            "/set sync_interval 60"
+        )
+        p4 = (
+            "【人员库按钮说明】\n"
+            "🟢 — 在线可联系\n"
+            "🔴 — 休息（仍在岗）\n"
+            "✓ — 已发布到目标频道\n\n"
+            "【控制台按钮】\n"
+            "立即同步 — 对比源频道删帖/去重\n"
+            "出勤同步 — 抓群出勤名单，刷新人员库\n"
+            "立即补抓 — 补抓源频道帖子入人员库"
+        )
+        return [p1, p2, p3, p4]
+
+    async def _send_help(self, token: str, chat_id: int | str) -> None:
+        for part in self._help_text():
+            await self._send(token, chat_id, part, reply_keyboard=MAIN_REPLY_KEYBOARD)
 
     async def _apply_toggle(self, field: str) -> Settings:
         settings = load_settings()
@@ -202,6 +359,25 @@ class BotAdmin:
         self.bridge.reload_settings()
         return updated
 
+    async def _run_action(self, token: str, chat_id: int, action: str) -> None:
+        if action == "library":
+            await self._show_library(token, chat_id, 0)
+        elif action == "menu":
+            s = load_settings()
+            await self._send(token, chat_id, "⚙️ 控制台", reply_markup=self._menu_keyboard(s))
+        elif action == "help":
+            await self._send_help(token, chat_id)
+        elif action == "sync":
+            result = await self.bridge.sync_with_source()
+            await self._send(token, chat_id, f"同步完成: {result}", reply_keyboard=MAIN_REPLY_KEYBOARD)
+        elif action == "roster":
+            result = await self.bridge.sync_roster()
+            await self._send(token, chat_id, f"出勤同步完成: {result}", reply_keyboard=MAIN_REPLY_KEYBOARD)
+        elif action == "fetch":
+            s = load_settings()
+            result = await self.bridge.fetch_recent_once(limit_per_channel=s.daily_fetch_limit)
+            await self._send(token, chat_id, f"补抓完成: {result}", reply_keyboard=MAIN_REPLY_KEYBOARD)
+
     async def _handle_command(self, token: str, chat_id: int, user_id: int, text: str) -> None:
         settings = load_settings()
         if not self._is_admin(settings, user_id):
@@ -209,16 +385,38 @@ class BotAdmin:
             return
 
         cmd = text.strip()
-        lower = cmd.lower()
-        if lower in ("/start", "/help"):
-            await self._send(token, chat_id, self._help_text())
+        lower = cmd.lower().split("@")[0]
+        if lower == "/start":
+            await self._send(
+                token, chat_id, self._welcome_text(), reply_keyboard=MAIN_REPLY_KEYBOARD
+            )
+            return
+        if lower in ("/help",):
+            await self._send_help(token, chat_id)
             return
         if lower == "/menu":
             s = load_settings()
-            await self._send(token, chat_id, "点击下方按钮调整：", self._menu_keyboard(s))
+            await self._send(token, chat_id, "⚙️ 控制台", reply_markup=self._menu_keyboard(s))
+            return
+        if lower == "/library":
+            await self._show_library(token, chat_id, 0)
             return
         if lower == "/status":
-            await self._send(token, chat_id, self._status_text(load_settings()))
+            await self._send(
+                token,
+                chat_id,
+                self._status_text(load_settings()),
+                reply_keyboard=MAIN_REPLY_KEYBOARD,
+            )
+            return
+        if lower == "/sync":
+            await self._run_action(token, chat_id, "sync")
+            return
+        if lower == "/roster":
+            await self._run_action(token, chat_id, "roster")
+            return
+        if lower == "/fetch":
+            await self._run_action(token, chat_id, "fetch")
             return
         if lower.startswith("/toggle"):
             parts = cmd.split(maxsplit=1)
@@ -250,7 +448,9 @@ class BotAdmin:
                 await self._send(token, chat_id, f"设置失败: {e}")
             return
 
-        await self._send(token, chat_id, "未知命令。发送 /help 查看说明。")
+        await self._send(
+            token, chat_id, "未知命令。发送 /help 查看说明。", reply_keyboard=MAIN_REPLY_KEYBOARD
+        )
 
     async def _handle_callback(self, token: str, callback: dict[str, Any]) -> None:
         settings = load_settings()
@@ -278,14 +478,41 @@ class BotAdmin:
                     token,
                     chat_id,
                     self._status_text(updated),
-                    self._menu_keyboard(updated),
+                    reply_markup=self._menu_keyboard(updated),
                 )
+                return
+
+            if data.startswith("lib:p:"):
+                page = int(data.split(":")[2])
+                await self._answer_callback(token, callback_id)
+                await self._show_library(token, chat_id, page)
+                return
+
+            if data.startswith("lib:v:"):
+                person_id = data.split(":", 2)[2]
+                await self._answer_callback(token, callback_id)
+                await self._show_person_preview(token, chat_id, person_id)
+                return
+
+            if data.startswith("lib:pub:"):
+                person_id = data.split(":", 2)[2]
+                await self._answer_callback(token, callback_id, "发布中…")
+                result = await self.bridge.publish_person_by_id(person_id)
+                if result.get("ok"):
+                    await self._send(token, chat_id, f"✅ 已发布: {person_id}")
+                    await self._show_person_preview(token, chat_id, person_id)
+                else:
+                    await self._send(
+                        token,
+                        chat_id,
+                        f"❌ 发布失败: {result.get('reason') or '未知错误'}",
+                    )
                 return
 
             if data == "action:status":
                 s = load_settings()
                 await self._answer_callback(token, callback_id)
-                await self._send(token, chat_id, self._status_text(s), self._menu_keyboard(s))
+                await self._send(token, chat_id, self._status_text(s), reply_markup=self._menu_keyboard(s))
                 return
 
             if data == "action:sync":
@@ -301,6 +528,12 @@ class BotAdmin:
                 await self._send(token, chat_id, f"补抓完成: {result}")
                 return
 
+            if data == "action:roster":
+                await self._answer_callback(token, callback_id, "出勤同步中…")
+                result = await self.bridge.sync_roster()
+                await self._send(token, chat_id, f"出勤同步完成: {result}")
+                return
+
             await self._answer_callback(token, callback_id)
         except Exception as e:
             log.exception("Bot 回调处理失败")
@@ -314,22 +547,33 @@ class BotAdmin:
         if not message:
             return
         text = message.get("text") or ""
-        if not text.startswith("/"):
-            return
         chat_id = message.get("chat", {}).get("id")
         user_id = message.get("from", {}).get("id")
         if chat_id is None:
+            return
+        if text in TEXT_ACTIONS:
+            settings = load_settings()
+            if not self._is_admin(settings, user_id):
+                await self._send(token, chat_id, "无权限。")
+                return
+            await self._run_action(token, chat_id, TEXT_ACTIONS[text])
+            return
+        if not text.startswith("/"):
             return
         await self._handle_command(token, chat_id, user_id, text)
 
     async def run_loop(self) -> None:
         self._running = True
         log.info("管理 Bot 轮询已启动")
+        commands_registered = False
         while self._running:
             settings = load_settings()
             if not settings.bot_token or not self._admin_ids(settings):
                 await asyncio.sleep(5)
                 continue
+            if not commands_registered:
+                await self._register_bot_commands(settings.bot_token)
+                commands_registered = True
             try:
                 client = await self._client()
                 resp = await client.get(
