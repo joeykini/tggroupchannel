@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from config import DATA_DIR
-from person_registry import merge_profile_fields
+from person_registry import merge_profile_fields, normalize_person_name
 from post_store import DB_PATH, _connect, _lock
 
 PERSON_STATUSES = ("online", "resting", "inactive", "unknown")
@@ -233,6 +233,35 @@ def delete_person(person_id: str) -> bool:
         return cur.rowcount > 0
 
 
+def delete_persons(person_ids: list[str]) -> int:
+    ids = [pid for pid in person_ids if pid]
+    if not ids:
+        return 0
+    placeholders = ",".join("?" * len(ids))
+    with _lock, _connect() as conn:
+        cur = conn.execute(
+            f"DELETE FROM persons WHERE person_id IN ({placeholders})",
+            ids,
+        )
+        conn.commit()
+        return cur.rowcount
+
+
+def mark_published_by_names(names: set[str]) -> int:
+    """按名字（归一化）将人员库中未发记录标记为已发布。"""
+    normalized = {normalize_person_name(n) for n in names if n}
+    if not normalized:
+        return 0
+    count = 0
+    for person in list_persons():
+        if person.library_status not in ("draft", "ready"):
+            continue
+        if normalize_person_name(person.name) in normalized:
+            update_person(person.person_id, library_status="published")
+            count += 1
+    return count
+
+
 def list_persons(status: str | None = None) -> list[PersonRecord]:
     sql = "SELECT * FROM persons"
     params: list[Any] = []
@@ -280,7 +309,9 @@ def list_publishable_persons(
     only_unpublished: bool = True,
     limit: int = 500,
 ) -> list[PersonRecord]:
-    """可发布人员：在岗且有预览文案。"""
+    """可发布人员：在岗、有预览文案、联系信息完整。"""
+    from person_registry import is_contact_complete
+
     sql = """
         SELECT * FROM persons
         WHERE preview_text != ''
@@ -292,23 +323,14 @@ def list_publishable_persons(
         sql += " AND library_status IN ('draft', 'ready', 'published')"
     sql += " ORDER BY name ASC LIMIT ?"
     with _lock, _connect() as conn:
-        rows = conn.execute(sql, (limit,)).fetchall()
-    return [_row_to_person(r) for r in rows]
+        rows = conn.execute(sql, (limit * 3,)).fetchall()
+    persons = [_row_to_person(r) for r in rows]
+    publishable = [p for p in persons if is_contact_complete(p.merged_fields or {})]
+    return publishable[:limit]
 
 
 def count_publishable_persons(only_unpublished: bool = True) -> int:
-    sql = """
-        SELECT COUNT(*) AS c FROM persons
-        WHERE preview_text != ''
-          AND roster_status IN ('online', 'resting', 'unknown')
-    """
-    if only_unpublished:
-        sql += " AND library_status IN ('draft', 'ready')"
-    else:
-        sql += " AND library_status IN ('draft', 'ready', 'published')"
-    with _lock, _connect() as conn:
-        row = conn.execute(sql).fetchone()
-    return int(row["c"] or 0) if row else 0
+    return len(list_publishable_persons(only_unpublished=only_unpublished, limit=10000))
 
 
 def list_posts_by_person(person_id: str) -> list[dict[str, Any]]:

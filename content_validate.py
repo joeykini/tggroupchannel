@@ -9,6 +9,7 @@ from filters import is_blocked_text
 from person_registry import (
     fields_from_text,
     is_allowed_region,
+    is_contact_complete,
     person_id_from_text,
     render_fields_template,
 )
@@ -75,6 +76,10 @@ def validate_for_capture(text: str, settings: Settings) -> tuple[bool, str]:
     pid = person_id_from_text(caption)
     if not pid:
         return False, "缺少可识别的名字+地区"
+
+    if not is_contact_complete(fields):
+        # 电报/频道不全：仍允许抓取入人员库，等待手动补全后发布
+        return True, ""
 
     rendered = render_fields_template(settings.publish_template, fields)
     if not rendered.strip():

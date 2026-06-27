@@ -14,7 +14,9 @@ from content_validate import validate_person_content
 from person_registry import (
     count_filled_fields,
     fields_from_text,
+    is_contact_complete,
     merge_profile_fields,
+    normalize_person_name,
     person_id_from_text,
     render_fields_template,
 )
@@ -26,6 +28,7 @@ from roster_store import (
     list_persons,
     list_posts_by_person,
     mark_person_posts,
+    mark_published_by_names,
     save_roster_snapshot,
     update_person,
     upsert_person,
@@ -107,6 +110,29 @@ def pick_canonical_post(posts: list[dict[str, Any]]) -> dict[str, Any] | None:
     if not posts:
         return None
     return max(posts, key=_score_post)
+
+
+async def fetch_target_published_names(
+    client: TelegramClient,
+    target_channel: str,
+    limit: int = 500,
+) -> set[str]:
+    """抓取目标频道已发布帖中的老师名字（仅名字，用于去重）。"""
+    names: set[str] = set()
+    if not target_channel:
+        return names
+    try:
+        async for msg in client.iter_messages(target_channel, limit=limit):
+            text = msg.message or ""
+            if not text:
+                continue
+            fields = fields_from_text(text)
+            name = normalize_person_name(fields.get("name", ""))
+            if name:
+                names.add(name)
+    except Exception as e:
+        log.error("抓取目标频道已发布名字失败: %s", e)
+    return names
 
 
 class RosterSync:
@@ -282,6 +308,10 @@ class RosterSync:
         if not ok:
             return False
 
+        if not is_contact_complete(merged):
+            self._emit("WARNING", f"联系信息不完整，跳过发布 {merged.get('name')} ({person_id})")
+            return False
+
         upsert_person(
             person_id,
             merged.get("name", ""),
@@ -369,11 +399,24 @@ class RosterSync:
 
         caption = self._build_final_caption(merged)
         if not caption:
+            rendered = render_fields_template(self.settings.publish_template, merged)
+            if rendered.strip():
+                caption = rendered
+            elif merged.get("name"):
+                caption = (
+                    f"名字:{merged.get('name', '')}\n"
+                    f"地区:{merged.get('region', '')}\n"
+                    f"电报:{merged.get('telegram', '') or '（待补全）'}"
+                )
+        if not caption:
             return False
 
         ok, reason = validate_person_content(caption, merged, self.settings)
         if not ok:
             return False
+
+        contact_ok = is_contact_complete(merged)
+        lib_status = "ready" if contact_ok else "draft"
 
         dup_ids = [p["id"] for p in posts_raw if p["id"] != canonical["id"]]
         if dup_ids:
@@ -393,10 +436,27 @@ class RosterSync:
             merged,
             roster_status=roster_status,
             preview_text=caption,
-            library_status="ready",
+            library_status=lib_status,
         )
         update_person(person_id, canonical_post_id=canonical["id"])
         return True
+
+    async def dedup_against_target_channel(self, client: TelegramClient) -> dict[str, int]:
+        """同步结束后抓取目标频道已发布名字，标记人员库中对应人为已发布。"""
+        if not self.settings.person_dedup_enabled or not self.settings.target_channel:
+            return {"names_found": 0, "marked_published": 0}
+        names = await fetch_target_published_names(
+            client,
+            self.settings.target_channel,
+            limit=self.settings.sync_scan_limit,
+        )
+        marked = mark_published_by_names(names)
+        if marked:
+            self._emit(
+                "INFO",
+                f"目标频道名字去重: 扫描 {len(names)} 个名字, 标记已发布 {marked} 人",
+            )
+        return {"names_found": len(names), "marked_published": marked}
 
     async def reconcile_all(self, client: TelegramClient) -> dict[str, int]:
         stats = {
@@ -408,6 +468,8 @@ class RosterSync:
             "purged": 0,
             "purged_region": 0,
             "purged_blocked": 0,
+            "dedup_names": 0,
+            "dedup_marked": 0,
         }
 
         purge_stats = await self.purge_invalid_library(client)
@@ -461,6 +523,9 @@ class RosterSync:
                 if await self.publish_person(client, person_id, active_entries):
                     stats["published"] += 1
 
+        dedup_stats = await self.dedup_against_target_channel(client)
+        stats["dedup_names"] = dedup_stats["names_found"]
+        stats["dedup_marked"] = dedup_stats["marked_published"]
         return stats
 
     async def ingest_post_to_library(self, post_id: str, text: str) -> str:
@@ -475,10 +540,28 @@ class RosterSync:
             self._emit("INFO", f"不入人员库 {post_id}: {reason}")
             return ""
         store_update(post_id, person_id=person_id)
-        await self.refresh_person_library(person_id)
+        if not await self.refresh_person_library(person_id):
+            preview = render_fields_template(self.settings.publish_template, fields)
+            if not preview.strip() and fields.get("name"):
+                preview = (
+                    f"名字:{fields.get('name', '')}\n"
+                    f"地区:{fields.get('region', '')}\n"
+                    f"电报:{fields.get('telegram', '') or '（待补全）'}"
+                )
+            if preview.strip():
+                lib_status = "ready" if is_contact_complete(fields) else "draft"
+                upsert_person(
+                    person_id,
+                    fields.get("name", ""),
+                    fields.get("region", ""),
+                    fields,
+                    preview_text=preview,
+                    library_status=lib_status,
+                )
+        status_note = "待补全联系" if not is_contact_complete(fields) else "可发布"
         self._emit(
             "INFO",
-            f"已入人员库: {fields.get('name')} ({fields.get('region')}) [{person_id}]",
+            f"已入人员库: {fields.get('name')} ({fields.get('region')}) [{person_id}] ({status_note})",
         )
         return person_id
 

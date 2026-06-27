@@ -137,6 +137,36 @@ def count_filled_fields(fields: dict[str, str]) -> int:
     return sum(1 for k in MERGE_FIELD_KEYS if (fields.get(k) or "").strip())
 
 
+def is_contact_complete(fields: dict[str, str]) -> bool:
+    """电报或频道链接是否足够用于发布。"""
+    channel = (fields.get("channel") or "").strip()
+    if channel and len(channel) > 5:
+        return True
+    telegram = (fields.get("telegram") or "").strip()
+    if not telegram:
+        return False
+    handle = re.sub(r"^@+", "", telegram).strip()
+    return len(handle) >= 3
+
+
+def has_incomplete_contact(text: str, fields: dict[str, str] | None = None) -> bool:
+    """原文有电报标签但值缺失或过短。"""
+    f = fields or fields_from_text(text or "")
+    if is_contact_complete(f):
+        return False
+    raw = text or ""
+    if re.search(
+        r"(?:电报|tg|telegram|联系|私聊|账号)\s*[：:]\s*[^\n\r]{0,2}\s*$",
+        raw,
+        re.MULTILINE | re.IGNORECASE,
+    ):
+        return True
+    tg = (f.get("telegram") or "").strip()
+    if tg and len(re.sub(r"[@\s]", "", tg)) < 3:
+        return True
+    return not is_contact_complete(f)
+
+
 def render_fields_template(template: str, fields: dict[str, str]) -> str:
     safe = {k: (fields.get(k) or "") for k in MERGE_FIELD_KEYS}
     safe["raw"] = ""

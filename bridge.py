@@ -324,7 +324,14 @@ class ChannelBridge:
                 await self._notify(
                     f"✅ 已发布人员\n{person_id}\n目标: {self.settings.target_channel}"
                 )
-            return {"ok": ok, "person_id": person_id}
+                return {"ok": ok, "person_id": person_id}
+            from person_registry import is_contact_complete
+            from roster_store import get_person
+
+            person = get_person(person_id)
+            if person and not is_contact_complete(person.merged_fields or {}):
+                return {"ok": False, "person_id": person_id, "reason": "联系信息不完整"}
+            return {"ok": False, "person_id": person_id, "reason": "发布失败"}
         finally:
             if own_temp_client and client.is_connected():
                 await client.disconnect()
@@ -601,6 +608,12 @@ class ChannelBridge:
                     await self._process_bundle(client, bundle)
                     handled += 1
             self._emit("INFO", f"定时抓取完成，处理 {handled} 个帖子")
+            if self.settings.person_dedup_enabled and self.settings.target_channel:
+                dedup = await self._roster().dedup_against_target_channel(client)
+                self._emit(
+                    "INFO",
+                    f"目标频道去重: 扫描 {dedup['names_found']} 名, 标记已发布 {dedup['marked_published']} 人",
+                )
         finally:
             if own_temp_client and client.is_connected():
                 await client.disconnect()

@@ -14,9 +14,11 @@ from config import Settings, load_settings, patch_settings
 from roster_store import (
     count_library_persons,
     count_publishable_persons,
+    delete_persons,
     get_person,
     list_library_persons,
 )
+from person_registry import is_contact_complete
 
 log = logging.getLogger("bot-admin")
 LIB_PAGE_SIZE = 12
@@ -90,6 +92,8 @@ class BotAdmin:
         self._running = False
         self._http: httpx.AsyncClient | None = None
         self._bulk_publish_lock = asyncio.Lock()
+        self._delete_selection: dict[int, set[str]] = {}
+        self._delete_mode: set[int] = set()
 
     @property
     def running(self) -> bool:
@@ -228,15 +232,23 @@ class BotAdmin:
             return "⚫"
         return "⚪"
 
-    def _person_button_label(self, person) -> str:
+    def _person_button_label(self, person, delete_mode: bool = False, selected: bool = False) -> str:
         icon = self._person_status_icon(person.roster_status)
         name = person.name or "未命名"
         region = person.region or "?"
+        prefix = "☑ " if delete_mode and selected else ("☐ " if delete_mode else "")
+        incomplete = "⚠" if not is_contact_complete(person.merged_fields or {}) else ""
         if person.library_status == "published":
-            return f"{icon}{name}·{region} ✓"
-        return f"{icon}{name}·{region}"
+            return f"{prefix}{icon}{name}·{region}{incomplete} ✓"
+        if person.library_status == "draft":
+            return f"{prefix}{icon}{name}·{region}{incomplete} 待补"
+        return f"{prefix}{icon}{name}·{region}{incomplete}"
 
-    def _library_list_keyboard(self, page: int) -> tuple[str, dict]:
+    def _library_list_keyboard(
+        self, page: int, chat_id: int | None = None
+    ) -> tuple[str, dict]:
+        delete_mode = chat_id is not None and chat_id in self._delete_mode
+        selected = self._delete_selection.get(chat_id or 0, set()) if delete_mode else set()
         total = count_library_persons()
         if total == 0:
             return "人员库为空。先抓取频道帖或运行出勤同步。", {"inline_keyboard": [[{"text": "返回菜单", "callback_data": "action:status"}]]}
@@ -247,8 +259,11 @@ class BotAdmin:
         rows: list[list[dict[str, str]]] = []
         row: list[dict[str, str]] = []
         for p in persons:
-            label = self._person_button_label(p)[:28]
-            row.append({"text": label, "callback_data": f"lib:v:{p.person_id}"})
+            label = self._person_button_label(p, delete_mode, p.person_id in selected)[:32]
+            if delete_mode:
+                row.append({"text": label, "callback_data": f"lib:del:toggle:{p.person_id}"})
+            else:
+                row.append({"text": label, "callback_data": f"lib:v:{p.person_id}"})
             if len(row) == 2:
                 rows.append(row)
                 row = []
@@ -263,15 +278,28 @@ class BotAdmin:
             nav.append({"text": "下页 ▶", "callback_data": f"lib:p:{page + 1}"})
         rows.append(nav)
         ready = count_publishable_persons(only_unpublished=True)
-        if ready > 0:
+        if delete_mode:
+            sel_count = len(selected)
             rows.append(
-                [{"text": f"📢 发布全部未发 ({ready})", "callback_data": "lib:puball:ask"}]
+                [
+                    {"text": f"🗑 确认删除 ({sel_count})", "callback_data": "lib:del:confirm"},
+                    {"text": "取消", "callback_data": "lib:del:cancel"},
+                ]
             )
+        else:
+            if ready > 0:
+                rows.append(
+                    [{"text": f"📢 发布全部未发 ({ready})", "callback_data": "lib:puball:ask"}]
+                )
+            rows.append([{"text": "🗑 批量删除", "callback_data": "lib:del:start"}])
         rows.append([{"text": "返回菜单", "callback_data": "action:status"}])
         text = (
             f"📚 人员库（共 {total} 人，未发 {ready} 人）\n"
-            "点名字 → 预览 → 单条发布；或点「发布全部未发」间隔批量发布。"
         )
+        if delete_mode:
+            text += f"删除模式：已选 {len(selected)} 人，点名字勾选/取消。\n"
+        else:
+            text += "点名字 → 预览 → 单条发布；⚠待补=电报不全；✓=已发布。\n"
         return text, {"inline_keyboard": rows}
 
     def _person_preview_keyboard(self, person_id: str) -> dict:
@@ -285,7 +313,8 @@ class BotAdmin:
         }
 
     async def _show_library(self, token: str, chat_id: int | str, page: int = 0) -> None:
-        text, markup = self._library_list_keyboard(page)
+        cid = int(chat_id) if str(chat_id).lstrip("-").isdigit() else 0
+        text, markup = self._library_list_keyboard(page, cid or None)
         await self._send(token, chat_id, text, reply_markup=markup)
 
     async def _run_bulk_publish(self, token: str, chat_id: int | str) -> None:
@@ -376,6 +405,8 @@ class BotAdmin:
             "【人员库】\n"
             "点名字 → 预览 → ✅ 发布到频道（单条）\n"
             "📢 发布全部未发 — 按 PUBLISH_INTERVAL_SECONDS 间隔批量发\n"
+            "🗑 批量删除 — 勾选后确认删除\n"
+            "⚠ 待补 — 电报/频道不全，入库等待手动补全后发布\n"
             "含「商k」或非淮安本地区 → 不入库，出勤同步时自动清理\n"
             "🟢 在线 | 🔴 休息 | ✓ 已发布\n\n"
             "【控制台按钮】\n"
@@ -545,6 +576,44 @@ class BotAdmin:
                 await self._show_library(token, chat_id, page)
                 return
 
+            if data == "lib:del:start":
+                self._delete_mode.add(int(chat_id))
+                self._delete_selection[int(chat_id)] = set()
+                await self._answer_callback(token, callback_id, "请选择要删除的人")
+                await self._show_library(token, chat_id, 0)
+                return
+
+            if data == "lib:del:cancel":
+                self._delete_mode.discard(int(chat_id))
+                self._delete_selection.pop(int(chat_id), None)
+                await self._answer_callback(token, callback_id, "已取消")
+                await self._show_library(token, chat_id, 0)
+                return
+
+            if data.startswith("lib:del:toggle:"):
+                person_id = data.split(":", 3)[3]
+                sel = self._delete_selection.setdefault(int(chat_id), set())
+                if person_id in sel:
+                    sel.discard(person_id)
+                else:
+                    sel.add(person_id)
+                await self._answer_callback(token, callback_id)
+                await self._show_library(token, chat_id, 0)
+                return
+
+            if data == "lib:del:confirm":
+                sel = self._delete_selection.get(int(chat_id), set())
+                if not sel:
+                    await self._answer_callback(token, callback_id, "请先选择要删除的人")
+                    return
+                removed = delete_persons(list(sel))
+                self._delete_mode.discard(int(chat_id))
+                self._delete_selection.pop(int(chat_id), None)
+                await self._answer_callback(token, callback_id, f"已删除 {removed} 人")
+                await self._send(token, chat_id, f"✅ 已从人员库删除 {removed} 人")
+                await self._show_library(token, chat_id, 0)
+                return
+
             if data.startswith("lib:v:"):
                 person_id = data.split(":", 2)[2]
                 await self._answer_callback(token, callback_id)
@@ -559,10 +628,14 @@ class BotAdmin:
                     await self._send(token, chat_id, f"✅ 已发布: {person_id}")
                     await self._show_person_preview(token, chat_id, person_id)
                 else:
+                    reason = result.get("reason") or "未知错误"
+                    person = get_person(person_id)
+                    if person and not is_contact_complete(person.merged_fields or {}):
+                        reason = "联系信息不完整（电报/频道待补全），请补全后再发布"
                     await self._send(
                         token,
                         chat_id,
-                        f"❌ 发布失败: {result.get('reason') or '未知错误'}",
+                        f"❌ 发布失败: {reason}",
                     )
                 return
 
